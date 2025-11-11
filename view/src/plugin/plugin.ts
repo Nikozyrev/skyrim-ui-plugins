@@ -1,13 +1,21 @@
-import { createStore } from 'solid-js/store';
+// import { createStore } from 'solid-js/store';
+import type { HitEvent } from './types';
+import { Subject } from 'rxjs';
 
-const pluginState = createStore({
-  focusLabel: '',
-});
+export const hitEvents$ = new Subject<HitEvent>();
 
-const setPluginState = pluginState[1];
+// const pluginState = createStore({
+//   hitEvents: [] as HitEvent[],
+// });
+
+// const setPluginState = pluginState[1];
 
 const PluginHandlers = {
-  updateFocusLabel: (label: string) => setPluginState('focusLabel', label),
+  onHitEvent: (targetName: string, source: number) =>
+    hitEvents$.next({ targetName, source }),
+  // setPluginState('hitEvents', (events) =>
+  //   events.concat({ targetName, source })
+  // ),
 };
 
 export const initPluginOnWindow = () => {
@@ -17,4 +25,4 @@ export const initPluginOnWindow = () => {
   );
 };
 
-export const usePluginState = () => pluginState;
+// export const usePluginState = () => pluginState;
