@@ -1,4 +1,5 @@
 export type HitEvent = {
   targetName: string;
-  source: number;
+  attackerName: string;
+  damage: number;
 };

@@ -11,8 +11,8 @@ export const hitEvents$ = new Subject<HitEvent>();
 // const setPluginState = pluginState[1];
 
 const PluginHandlers = {
-  onHitEvent: (targetName: string, source: number) =>
-    hitEvents$.next({ targetName, source }),
+  onHitEvent: (attackerName: string, targetName: string, damage: number) =>
+    hitEvents$.next({ targetName, attackerName, damage }),
   // setPluginState('hitEvents', (events) =>
   //   events.concat({ targetName, source })
   // ),

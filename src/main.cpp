@@ -6,22 +6,52 @@ auto viewUrl = "PrismaUI-Example-UI/index.html";
 PRISMA_UI_API::IVPrismaUI1* PrismaUI;
 static PrismaView view;
 
-class HitSink: public RE::BSTEventSink<RE::TESHitEvent> {
+class OnWeaponHit
+{
+public:
+    static void Hook()
+    {
+        _weapon_hit = SKSE::GetTrampoline().write_call<5>(REL::ID(37673).address() + 0x3C0, weapon_hit);
+    }
+
+private:
+    static void weapon_hit(RE::Actor* target, RE::HitData& hit_data) {
+        // Проверяем, что цель жива и удар актуален
+        if (hit_data.aggressor && target &&
+            !target->IsDead() && // Цель должна быть жива
+            (target->IsPlayerRef() || hit_data.aggressor.get()->IsPlayerRef())) {
+
+            std::string attackerName = hit_data.aggressor.get()->GetDisplayFullName();
+            std::string targetName = target->GetDisplayFullName();
+            int damage = static_cast<int>(hit_data.totalDamage);
+
+            logger::info("Attacker {}; Target {}; Damage {}", attackerName, targetName, damage);
+            std::string script = std::format("onHitEvent('{}', '{}', {})", attackerName, targetName, damage);
+            PrismaUI->Invoke(view, script.c_str());
+        }
+        return _weapon_hit(target, hit_data);
+    }
+
+    static inline REL::Relocation<decltype(weapon_hit)> _weapon_hit;
+};
+
+
+// class HitSink: public RE::BSTEventSink<RE::TESHitEvent> {
 
     
 
-    RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* event, RE::BSTEventSource<RE::TESHitEvent>*) {
-        if (!event->target) return RE::BSEventNotifyControl::kContinue;
-        auto targetName = event->target.get()->GetBaseObject()->GetName();
-        auto source = event->source;
-        logger::info("Hit target {} with source {}", targetName, source);
-        std::string script = std::format("onHitEvent('{}', {})", targetName, source);
-        PrismaUI->Invoke(view, script.c_str());
-        return RE::BSEventNotifyControl::kContinue;
-    }
-};
+//     RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* event, RE::BSTEventSource<RE::TESHitEvent>*) {
+//         if (!event->target) return RE::BSEventNotifyControl::kContinue;
+//         auto targetName = event->target.get()->GetBaseObject()->GetName();
+//         auto source = event->source;
+//         logger::info("Hit target {} with source {}", targetName, source);
+//         std::string script = std::format("onHitEvent('{}', {})", targetName, source);
+//         PrismaUI->Invoke(view, script.c_str());
+//         return RE::BSEventNotifyControl::kContinue;
+//     }
+// };
 
-auto* hitSink = new HitSink();
+// auto* hitSink = new HitSink();
 
 
 static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
@@ -32,7 +62,9 @@ static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
 
         view = PrismaUI->CreateView(viewUrl);
 
-        RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(hitSink);
+        OnWeaponHit::Hook();
+
+        // RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(hitSink);
 
         // PrismaUI->RegisterJSListener(view, "sendDataToSKSE", [](const char* data) -> void {
         //     logger::info("Received data from JS: {}", data);
