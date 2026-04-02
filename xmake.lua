@@ -16,9 +16,14 @@ add_rules("mode.release")
 --add_rules("mode.debug", "mode.releasedbg")
 add_rules("plugin.vsxmake.autoupdate")
 
+add_rules("plugin.compile_commands.autoupdate", {outputdir = "./.vscode"})
+
+add_requires("nlohmann_json")
 -- targets
 target("PrismaUI-Example-Plugin")
     add_deps("commonlibsse-ng")
+
+    add_packages("nlohmann_json")
 
     add_rules("commonlibsse-ng.plugin", {
        name = "PrismaUI-Example-Plugin",

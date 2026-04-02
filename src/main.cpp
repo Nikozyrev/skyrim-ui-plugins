@@ -1,7 +1,10 @@
 ﻿#include "PrismaUI_API.h"
 #include <keyhandler/keyhandler.h>
+#include <nlohmann/json.hpp>
 
-auto viewUrl = "PrismaUI-Example-UI/index.html";
+using JSON = nlohmann::json;
+
+auto viewUrl = "Alchemy UI/index.html";
 
 PRISMA_UI_API::IVPrismaUI1* PrismaUI;
 static PrismaView view;
@@ -53,6 +56,55 @@ private:
 
 // auto* hitSink = new HitSink();
 
+struct IngredientData {
+    uint32_t id;          // Уникальный ID предмета
+    std::string name;       // Название
+    int32_t count;          // Количество
+};
+
+std::vector<IngredientData> GetAllPlayerIngredients() {
+    std::vector<IngredientData> ingredients;
+
+    auto player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return ingredients;
+
+    // Получаем данные об изменениях в контейнере (инвентаре)
+    auto containerChanges = player->GetInventoryChanges();
+    if (!containerChanges || !containerChanges->entryList) return ingredients;
+
+    auto objList = containerChanges->entryList;
+    if (!objList) return ingredients;
+
+    for (auto* entry : *objList) {
+        if (!entry || !entry->object) continue;
+
+        // Проверяем, является ли предмет ингредиентом
+        if (entry->object->Is(RE::FormType::Ingredient)) {
+            auto* ingredient = entry->object->As<RE::IngredientItem>();
+            int32_t count = entry->countDelta; 
+            
+            if (count > 0) {
+                IngredientData data;
+                data.id = ingredient->GetFormID();
+                data.name = ingredient->GetName();
+                data.count = entry->countDelta;
+                ingredients.push_back(data);
+            }
+        }
+    }
+
+    return ingredients;
+}
+
+// Описываем, как структура превращается в JSON объект
+void to_json(JSON& j, const IngredientData& i) {
+    j = JSON {
+        {"id", i.id},
+        {"name", i.name},
+        {"count", i.count}
+    };
+}
+
 
 static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
 {
@@ -61,14 +113,19 @@ static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
         PrismaUI = static_cast<PRISMA_UI_API::IVPrismaUI1*>(PRISMA_UI_API::RequestPluginAPI(PRISMA_UI_API::InterfaceVersion::V1));
 
         view = PrismaUI->CreateView(viewUrl);
+        
+        PrismaUI->RegisterJSListener(view, "getPlayerIngredients", [](const char* data) -> void {
+            const auto ingredients = GetAllPlayerIngredients();
+            JSON payload = { 
+                { "ingredients", ingredients },
+            };
+            const auto callCommandString = std::format("SKSE_API.call('{}', {})", "ui/ingredients/set", payload.dump());
+    		PrismaUI->Invoke(view, callCommandString.c_str());
+        });
 
-        OnWeaponHit::Hook();
+        // OnWeaponHit::Hook();
 
         // RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(hitSink);
-
-        // PrismaUI->RegisterJSListener(view, "sendDataToSKSE", [](const char* data) -> void {
-        //     logger::info("Received data from JS: {}", data);
-        // });
 
         // KeyHandler::RegisterSink();
         // KeyHandler* keyHandler = KeyHandler::GetSingleton();
