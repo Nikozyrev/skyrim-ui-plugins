@@ -5,7 +5,13 @@
 #include <REL/Relocation.h>
 #include <SKSE/SKSE.h>
 
+#include <chrono>
+#include <cstdint>
 #include <fstream>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #ifdef NDEBUG
 #	include <spdlog/sinks/basic_file_sink.h>

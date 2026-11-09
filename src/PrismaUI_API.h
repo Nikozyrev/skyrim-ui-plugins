@@ -1,12 +1,22 @@
 ﻿/*
 * For modders: Copy this file into your own project if you wish to use this API.
+*
+* Upstream: https://github.com/PrismaUI-SKSE/framework
+* The header is intentionally self-contained (no CommonLibSSE-NG dependency) so it
+* can be dropped into any project.
 */
 #pragma once
 
-#include <functional>
-#include <queue>
-#include <stdint.h>
-#include <iostream>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <Windows.h>
+#include <cstdint>
 
 typedef uint64_t PrismaView;
 
@@ -14,21 +24,35 @@ namespace PRISMA_UI_API
 {
 	constexpr const auto PrismaUIPluginName = "PrismaUI";
 
-	using PluginHandle = SKSE::PluginHandle;
-	using ActorHandle = RE::ActorHandle;
-
+	// Available PrismaUI interface versions
 	enum class InterfaceVersion : uint8_t
 	{
-		V1
+		V1,
+		V2
 	};
 
 	typedef void (*OnDomReadyCallback)(PrismaView view);
 	typedef void (*JSCallback)(const char* result);
 	typedef void (*JSListenerCallback)(const char* argument);
 
+	// JavaScript console message severity level for use with RegisterConsoleCallback().
+	enum class ConsoleMessageLevel : uint8_t
+	{
+		Log = 0,
+		Warning,
+		Error,
+		Debug,
+		Info
+	};
+
+	typedef void (*ConsoleMessageCallback)(PrismaView view, ConsoleMessageLevel level, const char* message);
+
 	// PrismaUI modder interface v1
 	class IVPrismaUI1
 	{
+	protected:
+		~IVPrismaUI1() = default;
+
 	public:
 		// Create view.
 		virtual PrismaView CreateView(const char* htmlPath, OnDomReadyCallback onDomReadyCallback = nullptr) noexcept = 0;
@@ -46,7 +70,7 @@ namespace PRISMA_UI_API
 		virtual bool HasFocus(PrismaView view) noexcept = 0;
 
 		// Set focus on view.
-		virtual bool Focus(PrismaView view, bool pauseGame = false) noexcept = 0;
+		virtual bool Focus(PrismaView view, bool pauseGame = false, bool disableFocusMenu = false) noexcept = 0;
 
 		// Remove focus from view.
 		virtual void Unfocus(PrismaView view) noexcept = 0;
@@ -77,9 +101,53 @@ namespace PRISMA_UI_API
 
 		// Get view order.
 		virtual int GetOrder(PrismaView view) noexcept = 0;
+
+		// Create inspector view for debugging.
+		virtual void CreateInspectorView(PrismaView view) noexcept = 0;
+
+		// Show or hide the inspector overlay.
+		virtual void SetInspectorVisibility(PrismaView view, bool visible) noexcept = 0;
+
+		// Returns true if inspector is visible.
+		virtual bool IsInspectorVisible(PrismaView view) noexcept = 0;
+
+		// Set inspector window position and size.
+		virtual void SetInspectorBounds(PrismaView view, float topLeftX, float topLeftY, unsigned int width,
+										unsigned int height) noexcept = 0;
+
+		// Returns true if any view has active focus.
+		virtual bool HasAnyActiveFocus() noexcept = 0;
 	};
 
-	typedef void* (*_RequestPluginAPI)(const InterfaceVersion interfaceVersion);
+	// PrismaUI modder interface v2 (extends v1)
+	class IVPrismaUI2 : public IVPrismaUI1
+	{
+	protected:
+		~IVPrismaUI2() = default;
+
+	public:
+		// Register a callback to receive JavaScript console messages from a view.
+		// Pass nullptr to unregister.
+		virtual void RegisterConsoleCallback(PrismaView view, ConsoleMessageCallback callback) noexcept = 0;
+	};
+
+	// Maps interface types to InterfaceVersion enum values.
+	template <typename T>
+	struct InterfaceVersionMap;
+
+	template <>
+	struct InterfaceVersionMap<IVPrismaUI1>
+	{
+		static constexpr InterfaceVersion version = InterfaceVersion::V1;
+	};
+
+	template <>
+	struct InterfaceVersionMap<IVPrismaUI2>
+	{
+		static constexpr InterfaceVersion version = InterfaceVersion::V2;
+	};
+
+	typedef void* (*RequestPluginAPIFunc)(InterfaceVersion interfaceVersion);
 
 	/// <summary>
 	/// Request the PrismaUI API interface.
@@ -89,13 +157,26 @@ namespace PRISMA_UI_API
 	/// <returns>The pointer to the API singleton, or nullptr if request failed</returns>
 	[[nodiscard]] inline void* RequestPluginAPI(const InterfaceVersion a_interfaceVersion = InterfaceVersion::V1)
 	{
-		auto pluginHandle = GetModuleHandle("PrismaUI.dll");
-		_RequestPluginAPI requestAPIFunction = (_RequestPluginAPI)GetProcAddress(pluginHandle, "RequestPluginAPI");
-
-		if (requestAPIFunction) {
-			return requestAPIFunction(a_interfaceVersion);
+		auto pluginHandle = GetModuleHandleA("PrismaUI.dll");
+		if (!pluginHandle) {
+			return nullptr;
 		}
 
-		return nullptr;
+		auto requestAPIFunction = reinterpret_cast<RequestPluginAPIFunc>(GetProcAddress(pluginHandle, "RequestPluginAPI"));
+		if (!requestAPIFunction) {
+			return nullptr;
+		}
+
+		return requestAPIFunction(a_interfaceVersion);
+	}
+
+	/// <summary>
+	/// Request a specific PrismaUI API interface version.
+	/// Returns nullptr if the loaded PrismaUI DLL does not support the requested version.
+	/// </summary>
+	template <typename T>
+	[[nodiscard]] inline T* RequestPluginAPI()
+	{
+		return static_cast<T*>(RequestPluginAPI(InterfaceVersionMap<T>::version));
 	}
 }

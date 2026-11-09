@@ -1,6 +1,39 @@
 @import 'tailwindcss';
 
+/*
+ * The view is a transparent overlay on top of the game. Nothing may paint a
+ * background over the game and nothing may swallow mouse input.
+ */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
 #root {
-  width: 100vw;
-  height: 100vh;
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+@keyframes damage-row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.damage-row-enter {
+  animation: damage-row-enter 140ms ease-out;
 }

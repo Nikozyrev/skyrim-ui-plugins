@@ -8,4 +8,6 @@ initPluginOnWindow();
 
 const root = document.getElementById('root');
 
-render(() => <App />, root!);
+if (root) {
+  render(() => <App />, root);
+}

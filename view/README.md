@@ -1,28 +1,41 @@
-## Usage
+## Damage Overlay view
 
-```bash
-$ npm install # or pnpm install or yarn install
+The PrismaUI view of the damage overlay plugin.
+
+### Scripts
+
+| Command           | Description                                                                 |
+| ----------------- | --------------------------------------------------------------------------- |
+| `npm run dev`     | Starts the Vite dev server on <http://localhost:5173>.                       |
+| `npm run build`   | Type checks and builds the production bundle into `dist/`.                    |
+| `npm run preview` | Serves the built bundle locally.                                             |
+| `npm run deploy`  | Copies `dist/` into `<Skyrim>/PrismaUI/views/PrismaUI-Example-UI/`.          |
+
+`npm run deploy` uses the `XSE_TES5_GAME_PATH` environment variable. A different
+folder can be passed as an argument:
+
+```bat
+npm run deploy -- "D:\Games\Skyrim Special Edition"
 ```
 
-### Learn more on the [Solid Website](https://solidjs.com) and come chat with us on our [Discord](https://discord.com/invite/solidjs)
+### How the view talks to the plugin
 
-## Available Scripts
+The plugin calls a single global function:
 
-In the project directory, you can run:
+```js
+window.onDamageUpdate(JSON.stringify(payload));
+```
 
-### `npm run dev`
+The view announces itself through `window.onViewReady()`, which makes the plugin
+push the complete state again. That closes the race between the view being
+created and this script being evaluated.
 
-Runs the app in the development mode.<br>
-Open [http://localhost:5173](http://localhost:5173) to view it in the browser.
+The payload is always a JSON string, so it can never be interpreted as code.
 
-### `npm run build`
+| Payload type | Shape                                                                    |
+| ------------ | ------------------------------------------------------------------------ |
+| `event`      | `{ type: "event", actors: [...], event: {...} }` - a single new hit.      |
+| `snapshot`   | `{ type: "snapshot", actors: [...], events: [...] }` - the full state.     |
 
-Builds the app for production to the `dist` folder.<br>
-It correctly bundles Solid in production mode and optimizes the build for the best performance.
-
-The build is minified and the filenames include the hashes.<br>
-Your app is ready to be deployed!
-
-## Deployment
-
-Learn more about deploying your application with the [documentations](https://vite.dev/guide/static-deploy.html)
+`actors` holds the aggregated damage per character, `events` the recent hits.
+See `src/plugin/types.ts` for the exact shape.
