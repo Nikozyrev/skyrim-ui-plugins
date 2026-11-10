@@ -25,6 +25,7 @@ namespace Damage
 			target.isPlayer = a_event.targetIsPlayer;
 			target.damageTaken += a_event.damage;
 			target.hitsTaken += 1;
+			target.damageTakenByKind[KindIndex(a_event.kind)] += a_event.damage;
 		}
 
 		if (a_event.attackerId != 0) {
@@ -34,6 +35,7 @@ namespace Damage
 			attacker.isPlayer = a_event.attackerIsPlayer;
 			attacker.damageDealt += a_event.damage;
 			attacker.hitsDealt += 1;
+			attacker.damageDealtByKind[KindIndex(a_event.kind)] += a_event.damage;
 		}
 
 		_recent.push_back(a_event);

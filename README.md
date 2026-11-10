@@ -9,6 +9,9 @@ The overlay shows two things:
 * **Totals** – the accumulated damage per character: how much each character
   dealt and how much each character took.
 
+Every hit is coloured by the source of the damage, so fire, frost, shock and
+poison hits are told apart at a glance.
+
 Only damage that involves the player is tracked, which keeps the overlay quiet
 in busy locations.
 
@@ -39,6 +42,58 @@ patched separately:
 
 The data is captured *before* the original function runs, because the original
 may destroy the target (death) and a later access would be a use-after-free.
+
+### Damage kind
+
+`HandleHealthDamage` does not tell what kind of damage it is, so the plugin
+hooks the point where the engine applies an effect: `ValueModifierEffect::
+ModifyActorValue`. The health change of an effect happens *inside* that call,
+so the effect that applies the damage is still known when the damage is
+reported. The effect is remembered for the duration of the call
+(`Damage::Classifier::Context`) and the damage inherits its element.
+
+The element itself comes from the magic effect (MGEF): the engine stores the
+resistance that the effect bypasses in `EffectSetting::data.resistVariable`.
+
+| `resistVariable`   | Kind      |
+| ------------------ | --------- |
+| `kResistFire`      | `fire`    |
+| `kResistFrost`     | `frost`   |
+| `kResistShock`     | `shock`   |
+| `kPoisonResist`    | `poison`  |
+| anything else      | `magic`   |
+
+Damage that is not applied by an effect (weapon hits, falls) stays `physical`.
+
+`ModifyActorValue` is virtual as well, so every effect class that can carry
+damage owns its own vtable and is patched separately (slot `0x20` on all of
+them):
+
+| Class                                    | Carries                            |
+| ---------------------------------------- | ---------------------------------- |
+| `RE::ValueModifierEffect`                | continuous damage over time        |
+| `RE::DualValueModifierEffect`            | continuous damage over time        |
+| `RE::PeakValueModifierEffect`            | peak value effects                 |
+| `RE::AbsorbEffect`                       | absorbing damage                   |
+| `RE::AccumulatingValueModifierEffect`    | accumulating effects               |
+| `RE::TargetValueModifierEffect`          | instant damage (fireball, ...)     |
+| `RE::ValueAndConditionsEffect`           | conditional effects                |
+
+The effect hooks are optional: if they cannot be installed, the damage is
+still tracked and simply reported as physical damage.
+
+The colours of the overlay follow
+[Floating Damage NG](https://github.com/alandtse/FloatingDamageNG), so both
+read the same way:
+
+| Kind      | Colour     |
+| --------- | ---------- |
+| `physical` | amber     |
+| `fire`     | `#ff9500`  |
+| `frost`    | `#5ac8fa`  |
+| `shock`    | `#af52de`  |
+| `poison`   | `#4cd964`  |
+| `magic`    | `#c7b8e8`  |
 
 ### Plugin ↔ view bridge
 
@@ -160,16 +215,18 @@ src/
   PrismaUI_API.h         PrismaUI modder API (self-contained copy)
   damage/
     DamageTypes.h        damage event and per actor statistics
+    DamageTypes.cpp      damage kind names
     DamageTracker.h/.cpp thread safe aggregation
-    DamageHook.h/.cpp    Actor::HandleHealthDamage hooks
+    DamageHook.h/.cpp    Actor::HandleHealthDamage and effect hooks
+    DamageClassifier.h/.cpp element of a damage application
   ui/
     PrismaBridge.h/.cpp  failure tolerant PrismaUI wrapper
   keyhandler/            optional input helper (not wired up)
 view/
   src/
     App.tsx              overlay layout
-    components/          live feed and totals table
-    plugin/              plugin ↔ view bridge and state
+    components/          live feed, totals table and colour legend
+    plugin/              plugin ↔ view bridge, state and colour palette
   scripts/deploy.mjs     copies dist/ into the PrismaUI views folder
 ```
 
@@ -187,3 +244,5 @@ view/
 
 * [CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR) for the game API.
 * [PrismaUI](https://github.com/PrismaUI-SKSE/framework) for the UI framework.
+* [Floating Damage NG](https://github.com/alandtse/FloatingDamageNG) for the
+  reference implementation of the damage classification and its colour palette.

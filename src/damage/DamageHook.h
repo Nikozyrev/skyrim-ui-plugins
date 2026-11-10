@@ -13,6 +13,12 @@ namespace Damage
 	/// that owns a copy of the vtable has to be patched separately:
 	///   * `RE::Character`      - every NPC;
 	///   * `RE::PlayerCharacter` - the player.
+	///
+	/// The hook does not know the element of the damage, so the magic effect
+	/// classes are hooked as well. `ValueModifierEffect::ModifyActorValue` is
+	/// the point where the engine applies an effect, and the health change it
+	/// causes happens inside that call. The effect therefore tells the damage
+	/// apart as fire, frost, shock, poison or plain magic.
 	class Hook
 	{
 	public:

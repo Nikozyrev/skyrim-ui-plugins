@@ -1,5 +1,6 @@
 import { Show } from 'solid-js';
 import { DamageFeed } from './components/damage-feed';
+import { DamageLegend } from './components/damage-legend';
 import { DamageTotals } from './components/damage-totals';
 import { actors, connected, feed } from './plugin/plugin';
 
@@ -38,6 +39,8 @@ function App() {
           </section>
         </Show>
       </Show>
+
+      <DamageLegend />
     </div>
   );
 }

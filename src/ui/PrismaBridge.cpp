@@ -46,8 +46,24 @@ namespace UI
 				{ "targetName", a_event.targetName },
 				{ "targetIsPlayer", a_event.targetIsPlayer },
 				{ "damage", a_event.damage },
+				{ "kind", Damage::ToString(a_event.kind) },
 				{ "time", a_event.timeMs },
 			};
+		}
+
+		/// The accumulated damage of every kind, so the view can draw a coloured
+		/// breakdown. Kinds without damage are left out.
+		JSON KindsToJson(const Damage::DamageKindTotals& a_totals)
+		{
+			JSON kinds = JSON::object();
+
+			for (std::size_t i = 0; i < Damage::kDamageKindCount; ++i) {
+				if (a_totals[i] > 0.0f) {
+					kinds[Damage::ToString(static_cast<Damage::DamageKind>(i))] = a_totals[i];
+				}
+			}
+
+			return kinds;
 		}
 
 		JSON ActorToJson(const Damage::ActorStats& a_stats)
@@ -60,6 +76,8 @@ namespace UI
 				{ "damageTaken", a_stats.damageTaken },
 				{ "hitsDealt", a_stats.hitsDealt },
 				{ "hitsTaken", a_stats.hitsTaken },
+				{ "dealtByKind", KindsToJson(a_stats.damageDealtByKind) },
+				{ "takenByKind", KindsToJson(a_stats.damageTakenByKind) },
 			};
 		}
 

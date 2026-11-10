@@ -1,5 +1,6 @@
 ﻿#include "damage/DamageHook.h"
 
+#include "damage/DamageClassifier.h"
 #include "damage/DamageTracker.h"
 #include "damage/DamageTypes.h"
 #include "ui/PrismaBridge.h"
@@ -17,6 +18,11 @@ namespace Damage
 		// extra entries). The value matches the layout documented by CommonLibSSE-NG.
 		constexpr std::size_t kHandleHealthDamageSlot = 0x104;
 		constexpr std::size_t kHandleHealthDamageSlotVR = 0x106;
+
+		// `ValueModifierEffect::ModifyActorValue` is the point where the engine
+		// writes the effect of a spell, an enchantment or a potion onto an actor.
+		// The slot is the same on SE, AE and VR.
+		constexpr std::size_t kModifyActorValueSlot = 0x20;
 
 		// Guards against re-entrancy: our own capture path must never end up
 		// calling the hooked function again.
@@ -104,7 +110,19 @@ namespace Damage
 				return;
 			}
 
+			// The element of the damage is only known when an effect applies it.
+			const DamageKind kind = Classifier::Get().Classify(a_target);
+
+			const auto& context = Classifier::Context();
+
 			a_attacker = SanitizeAttacker(a_attacker);
+
+			// An effect always knows its caster, while the attacker the engine
+			// passes along is empty for some effects. The caster is the better
+			// source in that case.
+			if (!a_attacker && context.target == a_target) {
+				a_attacker = SanitizeAttacker(context.caster);
+			}
 
 			const bool targetIsPlayer = IsPlayer(a_target);
 			const bool attackerIsPlayer = IsPlayer(a_attacker);
@@ -119,6 +137,7 @@ namespace Damage
 				DamageEvent event;
 				event.timeMs = NowMs();
 				event.damage = a_damage;
+				event.kind = kind;
 
 				event.targetId = a_target->GetFormID();
 				event.targetName = SafeName(a_target);
@@ -190,6 +209,83 @@ namespace Damage
 				return true;
 			}
 		};
+
+		/// One hook instance per magic effect class. Every class owns its own copy
+		/// of the vtable, so every class needs its own slot for the original.
+		///
+		/// The engine applies the damage of a spell, an enchantment or a potion
+		/// through this virtual function, and the resulting health change ends up
+		/// in `Actor::HandleHealthDamage`. Remembering the effect for the duration
+		/// of the call is therefore the only way to know the element of the
+		/// damage: the effect itself carries it.
+		template <class TEffect>
+		struct ModifyActorValueHook
+		{
+			using Thunk_t = void(RE::ValueModifierEffect*, RE::Actor*, float, RE::ActorValue);
+
+			static void Thunk(RE::ValueModifierEffect* a_this, RE::Actor* a_actor, float a_value, RE::ActorValue a_actorValue)
+			{
+				// Effects nest (a counter effect is applied by its parent effect),
+				// so the previous context is restored afterwards.
+				const auto outer = Classifier::Context();
+
+				Classifier::Context() = EffectContext{
+					a_actor,
+					a_this ? a_this->GetBaseObject() : nullptr,
+					a_this ? a_this->GetCasterActor().get() : nullptr,
+				};
+
+				Original(a_this, a_actor, a_value, a_actorValue);
+
+				Classifier::Context() = outer;
+			}
+
+			static inline REL::Relocation<Thunk_t> Original;
+
+			static bool Install(const char* a_className)
+			{
+				REL::Relocation<std::uintptr_t> vtable{ TEffect::VTABLE[0] };
+
+				if (!vtable.address()) {
+					logger::error("Damage hook: could not resolve the vtable of {}.", a_className);
+					return false;
+				}
+
+				Original = vtable.write_vfunc(kModifyActorValueSlot, Thunk);
+
+				if (!Original.address()) {
+					logger::error("Damage hook: the vtable slot of {} was empty.", a_className);
+					return false;
+				}
+
+				logger::info("Damage hook installed on {} (vtable slot 0x{:X}).", a_className, kModifyActorValueSlot);
+				return true;
+			}
+		};
+
+		/// Installs the effect hooks on every magic effect class that is able to
+		/// carry damage. Returns false when not a single one of them could be
+		/// hooked.
+		bool InstallEffectHooks()
+		{
+			const bool valueModifier =
+				ModifyActorValueHook<RE::ValueModifierEffect>::Install("RE::ValueModifierEffect");
+			const bool dualValue =
+				ModifyActorValueHook<RE::DualValueModifierEffect>::Install("RE::DualValueModifierEffect");
+			const bool peakValue =
+				ModifyActorValueHook<RE::PeakValueModifierEffect>::Install("RE::PeakValueModifierEffect");
+			const bool absorb =
+				ModifyActorValueHook<RE::AbsorbEffect>::Install("RE::AbsorbEffect");
+			const bool accumulating =
+				ModifyActorValueHook<RE::AccumulatingValueModifierEffect>::Install("RE::AccumulatingValueModifierEffect");
+			const bool targetValue =
+				ModifyActorValueHook<RE::TargetValueModifierEffect>::Install("RE::TargetValueModifierEffect");
+			const bool valueAndConditions =
+				ModifyActorValueHook<RE::ValueAndConditionsEffect>::Install("RE::ValueAndConditionsEffect");
+
+			return valueModifier && dualValue && peakValue && absorb && accumulating && targetValue &&
+				   valueAndConditions;
+		}
 	}
 
 	bool Hook::Install()
@@ -210,6 +306,12 @@ namespace Damage
 
 		if (!npcHooked || !playerHooked) {
 			logger::warn("Damage hook: only a part of the actor classes could be hooked, some damage may be missed.");
+		}
+
+		// The effect hooks are optional: without them the damage is still
+		// tracked, but every hit is reported as physical damage.
+		if (!InstallEffectHooks()) {
+			logger::warn("Damage hook: the magic effects could not be hooked, elemental damage is reported as physical damage.");
 		}
 
 		g_installed.store(true);
