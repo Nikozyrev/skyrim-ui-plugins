@@ -11,3 +11,7 @@ vs*/
 # files
 *.zip
 compile_commands.json
+
+# local deployment target
+.env
+!.env.example

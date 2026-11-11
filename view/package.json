@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "deploy": "node scripts/deploy.mjs"
+    "deploy": "node ../deploy.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.17",

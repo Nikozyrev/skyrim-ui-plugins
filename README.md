@@ -184,27 +184,35 @@ npm run build
 
 ## Deploying
 
-| What                | Where                                                                                   |
-| ------------------- | --------------------------------------------------------------------------------------- |
-| `PrismaUI-Example-Plugin.dll` | `<Skyrim>/Plugins/`                                                            |
-| `view/dist/*`       | `<Skyrim>/PrismaUI/views/PrismaUI-Example-UI/`                                          |
+The deploy script builds both the plugin and the view and copies them into an
+MO2 mod folder:
 
-The DLL is copied automatically by the CommonLibSSE-NG plugin rule when one of
-these environment variables is set:
+| What                         | Where                                                            |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `PrismaUI-Example-Plugin.dll` | `<mod>/SKSE/Plugins/`                                           |
+| `view/dist/*`                | `<mod>/PrismaUI/views/PrismaUI-Example-UI/`                      |
 
-* Path to a Skyrim install folder: `XSE_TES5_GAME_PATH`
-* Path to a Mod Manager mods folder: `XSE_TES5_MODS_PATH`
+The target folder is read from `SKYRIM_MOD_PATH` in the `.env` file in the
+project root (copy `.env.example` to `.env` and adjust it):
 
-The view is deployed with the helper script:
+```env
+SKYRIM_MOD_PATH=D:\Games\Steam\steamapps\common\Skyrim Special Edition\MO2\mods\my-damage
+```
+
+Then run the script from the project root:
 
 ```bat
-cd view
-npm run deploy                                  # uses %XSE_TES5_GAME_PATH%
-npm run deploy -- "D:\Games\Skyrim Special Edition"
+node deploy.mjs                                     # builds and deploys
+node deploy.mjs --no-build                          # deploys the current artifacts
+node deploy.mjs "D:\...\MO2\mods\my-damage"        # overrides the .env target
 ```
 
 The script replaces the contents of `PrismaUI/views/PrismaUI-Example-UI/`, so no
 stale assets from a previous build are left behind.
+
+> The DLL is also copied automatically by the CommonLibSSE-NG plugin rule when
+> `XSE_TES5_GAME_PATH` or `XSE_TES5_MODS_PATH` is set. The deploy script hides
+> both variables from the build, so the mod folder above stays the only target.
 
 ## Project layout
 
@@ -227,7 +235,8 @@ view/
     App.tsx              overlay layout
     components/          live feed, totals table and colour legend
     plugin/              plugin ↔ view bridge, state and colour palette
-  scripts/deploy.mjs     copies dist/ into the PrismaUI views folder
+deploy.mjs               builds and deploys the plugin and the view
+.env                     deployment target (SKYRIM_MOD_PATH)
 ```
 
 ## Troubleshooting
