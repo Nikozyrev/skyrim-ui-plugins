@@ -1,4 +1,4 @@
-import type { DamageKind } from './types';
+import type { DamageKind, DamageKindBreakdown } from './types';
 
 /**
  * The damage kinds in the order they are shown in the legend.
@@ -64,3 +64,24 @@ export const DAMAGE_KIND_LABEL: Record<DamageKind, string> = {
  */
 export const resolveKind = (kind: string | undefined): DamageKind =>
   kind !== undefined && kind in DAMAGE_KIND_TEXT ? (kind as DamageKind) : 'physical';
+
+/**
+ * The kind that contributed the most damage to a breakdown.
+ *
+ * It is used when the damage of a target is rebuilt from an aggregate: the
+ * aggregate knows how much damage of every kind the target took.
+ */
+export const dominantKind = (breakdown: DamageKindBreakdown | undefined): DamageKind => {
+  let dominant: DamageKind = 'physical';
+  let largest = 0;
+
+  for (const kind of DAMAGE_KINDS) {
+    const value = breakdown?.[kind] ?? 0;
+    if (value > largest) {
+      largest = value;
+      dominant = kind;
+    }
+  }
+
+  return dominant;
+};

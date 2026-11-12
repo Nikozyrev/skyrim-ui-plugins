@@ -2,7 +2,7 @@ import { Show } from 'solid-js';
 import { DamageFeed } from './components/damage-feed';
 import { DamageLegend } from './components/damage-legend';
 import { DamageTotals } from './components/damage-totals';
-import { NpcHeads } from './components/npc-heads';
+import { NpcDamageOverlay } from './components/npc-damage';
 import { actors, connected, feed } from './plugin/plugin';
 
 const SectionTitle = (props: { children: string }) => (
@@ -14,7 +14,7 @@ function App() {
 
   return (
     <>
-      <NpcHeads />
+      <NpcDamageOverlay />
 
       <div class="pointer-events-none absolute left-3 top-3 flex w-80 flex-col gap-3 rounded-lg bg-slate-950/60 p-3 text-white shadow-lg backdrop-blur-sm">
         <div class="flex items-center justify-between">

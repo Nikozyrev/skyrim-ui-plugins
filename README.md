@@ -8,8 +8,8 @@ The overlay shows three things:
 * **Recent hits** – a live feed of the last few damage events (5 second lifetime).
 * **Totals** – the accumulated damage per character: how much each character
   dealt and how much each character took.
-* **NPC heads** – a red circle on the head of every NPC that is visible on the
-  screen.
+* **NPC damage** – the damage every visible NPC received, drawn as a number above
+  its head.
 
 Every hit is coloured by the source of the damage, so fire, frost, shock and
 poison hits are told apart at a glance.
@@ -99,8 +99,8 @@ read the same way:
 
 ### NPC head markers
 
-The plugin marks every NPC that is visible on the screen with a red circle on
-its head.
+The plugin tracks every NPC that is visible on the screen and draws the damage
+that NPC received right above its head.
 
 ```
 Skyrim ──► RE::ProcessLists::ForAllActors ──► Npc::Tracker
@@ -131,16 +131,33 @@ valid there. The view keeps showing the damage overlay in the main menu and
 only the head markers are switched off.
 
 The result is normalized to the viewport of the game, so the view can place the
-circles at any resolution:
+numbers at any resolution:
 
 | Field | Meaning                                                       |
 | ----- | ------------------------------------------------------------- |
 | `x`   | 0 is the left edge of the screen, 1 the right one             |
 | `y`   | 0 is the bottom edge of the screen, 1 the top one              |
-| `r`   | radius of the circle as a fraction of the height of the screen |
+| `r`   | radius of the head as a fraction of the height of the screen   |
 
 `Npc::Overlay` drives the tracker as a SKSE game thread task and refreshes the
 markers at most every 50 ms. The overlay stays idle until the view is up.
+
+### Damage above the heads
+
+The id of a marker and the `targetId` of a damage event are the same form id in
+the same `%08X` notation, so the view can look the damage of a marker up
+directly.
+
+The view keeps a map of the damage per target id. Every incoming damage event
+adds its amount to the entry of its target, and the kind of the most recent hit
+colours the number. A snapshot rebuilds the map from the aggregates of the
+plugin, so the damage is not counted twice and the overlay starts from a correct
+state after a save was loaded.
+
+The markers arrive at up to 60 times per second, so the view renders them with a
+keyed list: the ids are the key of the list, the elements are reused between the
+frames and only their position is updated. The number itself is recreated with
+every hit, which restarts the animation that makes it pop up.
 
 ### Plugin ↔ view bridge
 
@@ -174,15 +191,15 @@ between the view being created and the view script being evaluated. The NPC
 channel only starts after that handshake, because it needs the view to know the
 `onNpcUpdate` function.
 
-The view draws a circle per marker with a single CSS transform that carries
-both the position and the size:
+The view draws the damage number of a marker with a single CSS transform that
+carries both the position and the offset above the head:
 
 ```css
-transform: translate(960px, 540px) scale(0.4) translate(-50%, -50%);
+transform: translate(960px, 540px) translate(-50%, -100%);
 ```
 
-The circle itself is a fixed 100px element, so the scale factor is the only
-thing that changes its size.
+The font size of the number follows the size of the head on the screen, so it
+stays readable for NPCs that are far away.
 
 ### Failure tolerance
 
@@ -318,7 +335,7 @@ src/
 view/
   src/
     App.tsx              overlay layout
-    components/          live feed, totals table, colour legend, head markers
+    components/          live feed, totals table, colour legend, damage numbers
     plugin/              plugin ↔ view bridge, state and colour palette
 deploy.mjs               builds and deploys the plugin and the view
 .env                     deployment target (SKYRIM_MOD_PATH)
@@ -333,7 +350,7 @@ deploy.mjs               builds and deploys the plugin and the view
 | The log says PrismaUI was not found            | `PrismaUI.dll` is not installed or not loaded before the game starts. |
 | No damage is recorded                          | The hook could not be installed. Check `Documents/My Games/Skyrim Special Edition/SKSE/skse64.log` for `Damage hook` messages. |
 | The overlay does not show up                   | The view is created only while a world is loaded. Check the log for `NPC tracker` and `PrismaUI view` messages. |
-| No circles are drawn on the NPCs               | The camera could not be resolved or the actors have no head. Check the log for `NPC overlay` messages. |
+| No numbers are drawn above the NPCs            | The camera could not be resolved or the actors have no head. Check the log for `NPC overlay` messages. |
 | The overlay stays empty after loading a save   | Expected: the statistics are reset when a save is loaded.              |
 
 ## Credits

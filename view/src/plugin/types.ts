@@ -23,6 +23,20 @@ export type DamageEvent = {
   time: number;
 };
 
+/**
+ * The damage a single target received, as the overlay keeps track of it.
+ *
+ * The overlay builds this map from the damage events, keyed by the form id of
+ * the target, so it can look the damage of an NPC up by the id of its marker.
+ */
+export type TargetDamage = {
+  /** The accumulated damage the target received. */
+  amount: number;
+
+  /** The kind of the most recent hit that damaged the target. */
+  kind: DamageKind;
+};
+
 export type ActorStats = {
   id: string;
   name: string;

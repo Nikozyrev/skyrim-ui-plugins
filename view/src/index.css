@@ -39,7 +39,7 @@ body {
 }
 
 /*
- * Layer that holds the head markers of the NPCs that are visible on the
+ * Layer that holds the damage numbers of the NPCs that are visible on the
  * screen. It covers the whole viewport and never reacts to the mouse.
  */
 .npc-layer {
@@ -50,20 +50,39 @@ body {
 }
 
 /*
- * The circle is placed and sized with a single CSS transform. The element
- * itself is a fixed 100px circle; the transform moves it to the head of the
- * NPC and scales it down to the size the plugin measured.
+ * The number is placed with a single CSS transform: the transform moves it to
+ * the head of the NPC and shifts it up, so its lower edge touches the anchor.
  */
-.npc-marker {
+.npc-damage {
   position: absolute;
   top: 0;
   left: 0;
-  box-sizing: border-box;
-  width: 100px;
-  height: 100px;
-  border: 5px solid rgb(239 68 68);
-  border-radius: 50%;
-  background-color: rgb(239 68 68 / 0.15);
   transform-origin: 0 0;
   will-change: transform;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 0.9),
+    0 0 4px rgb(0 0 0 / 0.6);
+}
+
+/*
+ * The value itself. It is recreated on every hit, which restarts the
+ * animation and makes a new number pop up.
+ */
+.npc-damage-value {
+  display: inline-block;
+  animation: npc-damage-pop 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes npc-damage-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
