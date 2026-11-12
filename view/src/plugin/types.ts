@@ -85,10 +85,26 @@ export type NpcMarker = {
   r: number;
 };
 
-export type NpcUpdate = {
-  /** "npc" carries the heads that are currently visible on the screen. */
-  type: 'npc';
+/**
+ * The ids of the NPCs that are visible on the screen.
+ *
+ * The plugin only sends this payload when the set of the visible NPCs
+ * changed, so the ids are the stable key of the list of markers: the view
+ * can reuse the elements it already drew.
+ */
+export type NpcIdsUpdate = {
+  /** "npcIds" carries the ids of the NPCs that are visible on the screen. */
+  type: 'npcIds';
 
-  /** The heads of the visible NPCs. */
-  markers: NpcMarker[];
+  /** The form ids of the visible NPCs. */
+  ids: string[];
+};
+
+/** The heads of the visible NPCs, keyed by the form id of the NPC. */
+export type NpcMarkersUpdate = {
+  /** "npcMarkers" carries the heads that are currently visible on the screen. */
+  type: 'npcMarkers';
+
+  /** The heads of the visible NPCs, keyed by the form id of the NPC. */
+  markers: Record<string, NpcMarker>;
 };

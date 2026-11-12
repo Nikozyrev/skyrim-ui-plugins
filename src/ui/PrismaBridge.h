@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -56,7 +57,19 @@ namespace UI
 		/// Sends the complete state (aggregates + recent events) to the view.
 		void SendSnapshot();
 
+		/// Sends the ids of the NPCs that are currently visible on the screen.
+		///
+		/// The ids are the key of the markers of the view, so they are only
+		/// sent when the set of the visible NPCs really changed: an NPC that
+		/// entered or left the screen. While the set stays the same, the view
+		/// keeps the elements it already drew.
+		///
+		/// The set of the ids that were sent the last time is kept by the
+		/// bridge, so the caller only has to pass the current set.
+		void SendNpcIds(const std::set<Damage::ActorId>& a_ids);
+
 		/// Sends the heads of the NPCs that are currently visible on the screen.
+		/// The markers are keyed by the form id of the NPC.
 		/// The payload replaces the markers of the previous update completely.
 		void SendNpcMarkers(const std::vector<Npc::Marker>& a_markers);
 
@@ -66,6 +79,12 @@ namespace UI
 		/// Serializes and pushes a payload to a JavaScript function of the
 		/// view. Returns false when the UI is not ready.
 		bool Send(const char* a_function, const std::string& a_payload);
+
+		/// Forgets the ids of the NPCs that were sent the last time.
+		///
+		/// The view starts with an empty list of markers, so the ids have to
+		/// be sent again after the view announced itself.
+		void ResetNpcIds();
 
 		PRISMA_UI_API::IVPrismaUI1* _api = nullptr;
 
@@ -81,5 +100,13 @@ namespace UI
 		/// Guards the PrismaUI calls so that two threads never talk to the view
 		/// at the same time.
 		std::mutex _sendMutex;
+
+		/// The ids of the NPCs that were sent to the view the last time. The
+		/// set decides whether the ids have to be sent again.
+		std::set<Damage::ActorId> _npcIds;
+
+		/// Guards the set of the sent NPC ids, so that it is never touched
+		/// while a payload is on its way to the view.
+		std::mutex _npcIdsMutex;
 	};
 }

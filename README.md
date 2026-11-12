@@ -159,17 +159,22 @@ keyed list: the ids are the key of the list, the elements are reused between the
 frames and only their position is updated. The number itself is recreated with
 every hit, which restarts the animation that makes it pop up.
 
+The ids of the visible NPCs travel on their own channel and only when the set
+of the visible NPCs changed, so the list of the view stays stable while the
+NPCs only move around.
+
 ### Plugin ↔ view bridge
 
-The plugin talks to the view through two global JavaScript functions:
+The plugin talks to the view through three global JavaScript functions:
 
 ```js
 window.onDamageUpdate(JSON.stringify(payload));
-window.onNpcUpdate(JSON.stringify(payload));
+window.onNpcIdsUpdate(JSON.stringify(payload));
+window.onNpcMarkersUpdate(JSON.stringify(payload));
 ```
 
 The payload is always a JSON string, so it can never be interpreted as code.
-Three payload types exist:
+Four payload types exist:
 
 ```jsonc
 // a single new hit
@@ -178,18 +183,26 @@ Three payload types exist:
 // the complete state
 { "type": "snapshot", "actors": [ /* ... */ ], "events": [ /* ... */ ] }
 
-// the heads of the NPCs that are visible on the screen
-{ "type": "npc", "markers": [ { "id": "000ABCDE", "name": "Bandit", "x": 0.42, "y": 0.31, "r": 0.02 } ] }
+// the ids of the NPCs that are visible on the screen
+{ "type": "npcIds", "ids": [ "000ABCDE", "0000BEEF" ] }
+
+// the heads of the NPCs that are visible on the screen, keyed by their id
+{ "type": "npcMarkers", "markers": { "000ABCDE": { "id": "000ABCDE", "name": "Bandit", "x": 0.42, "y": 0.31, "r": 0.02 } } }
 ```
 
-An `npc` payload replaces the markers of the previous update completely, so an
-NPC that left the screen disappears without a separate "remove" message.
+An `npcIds` payload replaces the ids of the previous update completely, so an
+NPC that left the screen disappears without a separate "remove" message. It is
+only sent when an NPC entered or left the screen: the bridge keeps the set of
+the ids it sent the last time and compares it with the current one.
+
+An `npcMarkers` payload replaces the markers of the previous update completely.
+The markers arrive with every frame, because the NPCs move around.
 
 The view registers `window.onViewReady` as well and calls it once its own
 handler is installed. The plugin answers with a snapshot, which closes the race
 between the view being created and the view script being evaluated. The NPC
-channel only starts after that handshake, because it needs the view to know the
-`onNpcUpdate` function.
+channels only start after that handshake, because they need the view to know
+the `onNpcIdsUpdate` and `onNpcMarkersUpdate` functions.
 
 The view draws the damage number of a marker with a single CSS transform that
 carries both the position and the offset above the head:

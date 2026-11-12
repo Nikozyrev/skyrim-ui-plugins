@@ -85,11 +85,10 @@ const NpcDamage = (props: { id: string }) => {
               }}
               title={current().name}
             >
-              {/* The number is recreated with every hit, which restarts the animation. */}
-              <Show when={taken().amount} keyed>
+              <Show when={taken().amount}>
                 {(amount) => (
                   <span class={`npc-damage-value ${DAMAGE_KIND_TEXT[taken().kind]}`}>
-                    {formatAmount(amount)}
+                    {formatAmount(amount())}
                   </span>
                 )}
               </Show>

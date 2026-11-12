@@ -4,8 +4,9 @@ import type {
   ActorStats,
   DamageEvent,
   DamageUpdate,
+  NpcIdsUpdate,
   NpcMarker,
-  NpcUpdate,
+  NpcMarkersUpdate,
   TargetDamage,
 } from './types';
 
@@ -33,13 +34,18 @@ const [connected, setConnected] = createSignal(false);
 /**
  * The ids of the NPCs that are currently visible on the screen.
  *
- * The ids are the stable key of a marker: the list is replaced with every
- * update, but the ids themselves stay the same, so the view can reuse the
- * elements it already drew.
+ * The ids are the stable key of a marker: the plugin only sends them when an
+ * NPC entered or left the screen, so the view can reuse the elements it
+ * already drew while the NPCs only move around.
  */
 const [npcMarkerIds, setNpcMarkerIds] = createSignal<string[]>([]);
 
-/** The markers of the visible NPCs, keyed by the form id of the NPC. */
+/**
+ * The markers of the visible NPCs, keyed by the form id of the NPC.
+ *
+ * The markers arrive with every frame, they only carry the position of the
+ * head of the NPC.
+ */
 const [npcMarkers, setNpcMarkers] = createSignal<Map<string, NpcMarker>>(new Map());
 
 /**
@@ -189,14 +195,31 @@ const sweepFeed = () => {
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
-const parseNpcUpdate = (payload: unknown): NpcUpdate | null => {
+const parseNpcIdsUpdate = (payload: unknown): NpcIdsUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(payload) as NpcUpdate;
-    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npc') {
+    const parsed = JSON.parse(payload) as NpcIdsUpdate;
+    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npcIds') {
+      return null;
+    }
+    return parsed;
+  } catch {
+    // A malformed payload must never break the overlay.
+    return null;
+  }
+};
+
+const parseNpcMarkersUpdate = (payload: unknown): NpcMarkersUpdate | null => {
+  if (typeof payload !== 'string' || payload.length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as NpcMarkersUpdate;
+    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npcMarkers') {
       return null;
     }
     return parsed;
@@ -207,35 +230,48 @@ const parseNpcUpdate = (payload: unknown): NpcUpdate | null => {
 };
 
 /**
+ * Applies the ids of the NPCs that are currently visible on the screen.
+ *
+ * The plugin only sends the ids when an NPC entered or left the screen, so
+ * the list is replaced with the complete set of the visible NPCs.
+ */
+const applyNpcIdsUpdate = (payload: string) => {
+  const update = parseNpcIdsUpdate(payload);
+  if (!update) {
+    return;
+  }
+
+  const ids = Array.isArray(update.ids)
+    ? update.ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
+
+  setNpcMarkerIds(ids);
+};
+
+/**
  * Applies the heads of the NPCs that are currently visible on the screen.
  *
  * The payload replaces the previous markers completely, so an NPC that left
  * the screen disappears without a separate "remove" message.
  */
-const applyNpcUpdate = (payload: string) => {
-  const update = parseNpcUpdate(payload);
+const applyNpcMarkersUpdate = (payload: string) => {
+  const update = parseNpcMarkersUpdate(payload);
   if (!update) {
     return;
   }
 
-  const ids: string[] = [];
   const markers = new Map<string, NpcMarker>();
 
-  if (Array.isArray(update.markers)) {
-    for (const marker of update.markers) {
-      if (!marker || !isFiniteNumber(marker.x) || !isFiniteNumber(marker.y) || !isFiniteNumber(marker.r)) {
+  if (update.markers && typeof update.markers === 'object') {
+    for (const [id, marker] of Object.entries(update.markers)) {
+      if (!id || !marker || !isFiniteNumber(marker.x) || !isFiniteNumber(marker.y) || !isFiniteNumber(marker.r)) {
         continue;
       }
 
-      const id = typeof marker.id === 'string' ? marker.id : '';
-
-      // A marker without an id cannot be matched with a damage event, so it
-      // is of no use for the overlay.
-      if (!id || markers.has(id)) {
+      if (markers.has(id)) {
         continue;
       }
 
-      ids.push(id);
       markers.set(id, {
         id,
         name: typeof marker.name === 'string' ? marker.name : '',
@@ -246,7 +282,6 @@ const applyNpcUpdate = (payload: string) => {
     }
   }
 
-  setNpcMarkerIds(ids);
   setNpcMarkers(markers);
 };
 
@@ -255,8 +290,11 @@ declare global {
     /** Called by the plugin for every damage update. */
     onDamageUpdate?: (payload: string) => void;
 
+    /** Called by the plugin when the set of the visible NPCs changed. */
+    onNpcIdsUpdate?: (payload: string) => void;
+
     /** Called by the plugin for every update of the visible NPC heads. */
-    onNpcUpdate?: (payload: string) => void;
+    onNpcMarkersUpdate?: (payload: string) => void;
 
     /** Called by the view to tell the plugin that it is ready to receive data. */
     onViewReady?: () => void;
@@ -273,7 +311,8 @@ declare global {
  */
 export const initPluginOnWindow = () => {
   window.onDamageUpdate = applyUpdate;
-  window.onNpcUpdate = applyNpcUpdate;
+  window.onNpcIdsUpdate = applyNpcIdsUpdate;
+  window.onNpcMarkersUpdate = applyNpcMarkersUpdate;
 
   window.setInterval(sweepFeed, FEED_SWEEP_MS);
 

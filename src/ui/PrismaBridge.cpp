@@ -18,7 +18,10 @@ namespace UI
 		constexpr auto kUpdateFunction = "onDamageUpdate";
 
 		/// Name of the JavaScript entry point the NPC head overlay listens on.
-		constexpr auto kNpcFunction = "onNpcUpdate";
+		/// The ids of the visible NPCs and their markers use two separate
+		/// functions: the ids change far less often than the markers.
+		constexpr auto kNpcIdsFunction = "onNpcIdsUpdate";
+		constexpr auto kNpcMarkersFunction = "onNpcMarkersUpdate";
 
 		/// PrismaUI calls this plain function pointer once the view is ready.
 		void OnDomReadyTrampoline(PrismaView /*a_view*/)
@@ -95,18 +98,32 @@ namespace UI
 			return actors;
 		}
 
+		/// The ids of the visible NPCs, in the same notation the markers and
+		/// the damage events use.
+		JSON IdsToJson(const std::set<Damage::ActorId>& a_ids)
+		{
+			JSON ids = JSON::array();
+
+			for (const auto id : a_ids) {
+				ids.push_back(FormIdToString(id));
+			}
+
+			return ids;
+		}
+
+		/// The heads of the visible NPCs, keyed by the form id of the NPC.
 		JSON MarkersToJson(const std::vector<Npc::Marker>& a_markers)
 		{
-			JSON markers = JSON::array();
+			JSON markers = JSON::object();
 
 			for (const auto& marker : a_markers) {
-				markers.push_back(JSON{
+				markers[FormIdToString(marker.id)] = JSON{
 					{ "id", FormIdToString(marker.id) },
 					{ "name", marker.name },
 					{ "x", marker.x },
 					{ "y", marker.y },
 					{ "r", marker.radius },
-				});
+				};
 			}
 
 			return markers;
@@ -193,6 +210,7 @@ namespace UI
 	{
 		_domReady.store(true);
 		logger::info("PrismaUI view is ready, pushing the damage overlay state.");
+		ResetNpcIds();
 		SendSnapshot();
 	}
 
@@ -203,7 +221,17 @@ namespace UI
 		_viewReady.store(true);
 
 		logger::info("PrismaUI view announced itself, pushing the damage overlay state.");
+		ResetNpcIds();
 		SendSnapshot();
+	}
+
+	void Bridge::ResetNpcIds()
+	{
+		// The view starts with an empty list of markers, so the ids of the
+		// visible NPCs have to be sent again even when the set did not
+		// change since the last update.
+		std::lock_guard<std::mutex> lock(_npcIdsMutex);
+		_npcIds.clear();
 	}
 
 	bool Bridge::IsReady() const
@@ -251,6 +279,40 @@ namespace UI
 		Send(kUpdateFunction, payload.dump());
 	}
 
+	void Bridge::SendNpcIds(const std::set<Damage::ActorId>& a_ids)
+	{
+		// The NPC channel is only used once the view announced itself: before
+		// that the view does not know the JavaScript function yet.
+		if (!_api || !_viewReady.load()) {
+			return;
+		}
+
+		// The set of the visible NPCs changes far less often than the markers:
+		// the NPCs stay on the screen while they only move around. The ids are
+		// therefore only sent when an NPC entered or left the screen.
+		{
+			std::lock_guard<std::mutex> lock(_npcIdsMutex);
+
+			if (_npcIds == a_ids) {
+				return;
+			}
+		}
+
+		JSON payload{
+			{ "type", "npcIds" },
+			{ "ids", IdsToJson(a_ids) },
+		};
+
+		// The set is only remembered when the payload made it to the view,
+		// otherwise it would never be sent again.
+		if (!Send(kNpcIdsFunction, payload.dump())) {
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(_npcIdsMutex);
+		_npcIds = a_ids;
+	}
+
 	void Bridge::SendNpcMarkers(const std::vector<Npc::Marker>& a_markers)
 	{
 		// The NPC channel is only used once the view announced itself: before
@@ -260,11 +322,11 @@ namespace UI
 		}
 
 		JSON payload{
-			{ "type", "npc" },
+			{ "type", "npcMarkers" },
 			{ "markers", MarkersToJson(a_markers) },
 		};
 
-		Send(kNpcFunction, payload.dump());
+		Send(kNpcMarkersFunction, payload.dump());
 	}
 
 	bool Bridge::Send(const char* a_function, const std::string& a_payload)
