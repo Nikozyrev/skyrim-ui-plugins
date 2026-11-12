@@ -1,5 +1,5 @@
 import { For } from 'solid-js';
-import { DAMAGE_KINDS, DAMAGE_KIND_FILL, DAMAGE_KIND_LABEL } from '../plugin/damage-colors';
+import { DAMAGE_KINDS, DAMAGE_KIND_FILL, DAMAGE_KIND_LABEL } from '../../plugin/damage-colors';
 
 /**
  * The colour key of the overlay. It stays visible even when no damage has

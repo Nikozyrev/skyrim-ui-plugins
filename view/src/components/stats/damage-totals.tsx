@@ -1,7 +1,7 @@
 import { For, Show } from 'solid-js';
-import { actors } from '../plugin/plugin';
-import { DAMAGE_KINDS, DAMAGE_KIND_FILL } from '../plugin/damage-colors';
-import type { ActorStats, DamageKindBreakdown } from '../plugin/types';
+import { actors } from '../../plugin/plugin';
+import { DAMAGE_KINDS, DAMAGE_KIND_FILL } from '../../plugin/damage-colors';
+import type { ActorStats, DamageKindBreakdown } from '../../plugin/types';
 
 const formatAmount = (value: number) => Math.round(value).toString();
 

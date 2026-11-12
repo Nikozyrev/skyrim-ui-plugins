@@ -1,12 +1,12 @@
 import { For, Show } from 'solid-js';
-import { feed } from '../plugin/plugin';
+import { feed } from '../../plugin/plugin';
 import {
   DAMAGE_KIND_BORDER,
   DAMAGE_KIND_LABEL,
   DAMAGE_KIND_TEXT,
   resolveKind,
-} from '../plugin/damage-colors';
-import type { DamageEvent } from '../plugin/types';
+} from '../../plugin/damage-colors';
+import type { DamageEvent } from '../../plugin/types';
 
 const formatAmount = (value: number) => Math.round(value).toString();
 
