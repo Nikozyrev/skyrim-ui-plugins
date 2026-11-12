@@ -1,4 +1,6 @@
-@import 'tailwindcss';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 /*
  * The view is a transparent overlay on top of the game. Nothing may paint a
