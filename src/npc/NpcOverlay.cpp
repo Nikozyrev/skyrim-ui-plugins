@@ -5,7 +5,6 @@
 
 #include <chrono>
 #include <exception>
-#include <set>
 
 namespace Npc
 {
@@ -93,19 +92,10 @@ namespace Npc
 				Npc::Tracker::Get().Collect();
 				const auto& markers = Npc::Tracker::Get().Markers();
 
-				// The set of the NPCs that are visible on the screen. It only
-				// changes when an NPC enters or leaves the screen, so the
-				// bridge only sends the ids when it really changed.
-				std::set<Damage::ActorId> ids;
-
-				for (const auto& marker : markers) {
-					ids.insert(marker.id);
-				}
-
-				// The markers are sent first: a NPC that just appeared then
-				// has its marker before the view draws the element for it.
+				// The bridge takes care of the traffic: it only sends the
+				// table of the visible NPCs when the set of them changed and
+				// it skips a frame in which no marker moved.
 				UI::Bridge::Get().SendNpcMarkers(markers);
-				UI::Bridge::Get().SendNpcIds(ids);
 			}
 		}
 		catch (const std::exception& a_error) {

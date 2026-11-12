@@ -83,6 +83,14 @@ export type NpcMarker = {
 
   /** Radius of the head circle as a fraction of the height of the screen. */
   r: number;
+
+  /**
+   * True once the position of the marker was received.
+   *
+   * The plugin announces the ids of the visible NPCs before it sends their
+   * positions, so a marker exists a moment before it can be drawn.
+   */
+  placed: boolean;
 };
 
 /**
@@ -96,15 +104,25 @@ export type NpcIdsUpdate = {
   /** "npcIds" carries the ids of the NPCs that are visible on the screen. */
   type: 'npcIds';
 
-  /** The form ids of the visible NPCs. */
+  /**
+   * The form ids of the visible NPCs.
+   *
+   * The order matters: the frames of the positions address their markers by
+   * the index of the NPC in this list.
+   */
   ids: string[];
 };
 
-/** The heads of the visible NPCs, keyed by the form id of the NPC. */
-export type NpcMarkersUpdate = {
-  /** "npcMarkers" carries the heads that are currently visible on the screen. */
-  type: 'npcMarkers';
+/**
+ * The names of the NPCs that are visible on the screen.
+ *
+ * The plugin only sends the names of the NPCs that entered the screen, in
+ * their own message, so the names never travel with the positions.
+ */
+export type NpcNamesUpdate = {
+  /** "npcNames" carries the names of the NPCs that entered the screen. */
+  type: 'npcNames';
 
-  /** The heads of the visible NPCs, keyed by the form id of the NPC. */
-  markers: Record<string, NpcMarker>;
+  /** The display names of the NPCs, keyed by their form id. */
+  names: Record<string, string>;
 };

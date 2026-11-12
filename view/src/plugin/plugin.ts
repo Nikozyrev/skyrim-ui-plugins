@@ -1,4 +1,5 @@
-import { createSignal } from 'solid-js';
+import { batch, createSignal } from 'solid-js';
+import { createStore, reconcile } from 'solid-js/store';
 import { dominantKind, resolveKind } from './damage-colors';
 import type {
   ActorStats,
@@ -6,7 +7,7 @@ import type {
   DamageUpdate,
   NpcIdsUpdate,
   NpcMarker,
-  NpcMarkersUpdate,
+  NpcNamesUpdate,
   TargetDamage,
 } from './types';
 
@@ -44,9 +45,26 @@ const [npcMarkerIds, setNpcMarkerIds] = createSignal<string[]>([]);
  * The markers of the visible NPCs, keyed by the form id of the NPC.
  *
  * The markers arrive with every frame, they only carry the position of the
- * head of the NPC.
+ * head of the NPC. They live in a store instead of a signal, so a frame only
+ * touches the markers that really moved and only those are drawn again.
  */
-const [npcMarkers, setNpcMarkers] = createSignal<Map<string, NpcMarker>>(new Map());
+const [npcMarkers, setNpcMarkers] = createStore<Record<string, NpcMarker>>({});
+
+/**
+ * The ids of the visible NPCs in the order of the frames.
+ *
+ * The frames address their markers by the index of the NPC in this list, so
+ * the list is kept next to the store and not inside it.
+ */
+let npcOrder: string[] = [];
+
+/**
+ * The names of the NPCs that are visible on the screen, keyed by their id.
+ *
+ * The plugin sends the names of the NPCs that entered the screen in their own
+ * message, so they are kept next to the markers and not inside the store.
+ */
+const npcNames = new Map<string, string>();
 
 /**
  * The damage every target received, keyed by the form id of the target.
@@ -54,10 +72,38 @@ const [npcMarkers, setNpcMarkers] = createSignal<Map<string, NpcMarker>>(new Map
  * The ids are the ones the plugin sends as the `targetId` of a damage event
  * and as the `id` of an NPC marker, so the overlay can look the damage of a
  * marker up directly.
+ *
+ * The damage lives in a store instead of a signal, so a hit only touches the
+ * entry of its target and only the number above that head is drawn again.
  */
-const [damageByTarget, setDamageByTarget] = createSignal<Map<string, TargetDamage>>(new Map());
+const [damageByTarget, setDamageByTarget] = createStore<Record<string, TargetDamage>>({});
+
+/**
+ * The ids of the targets in the order they were hit, the oldest one first.
+ *
+ * The order decides which target is dropped when the damage grows past its
+ * budget: the one that was hit the longest time ago.
+ */
+let damageOrder: string[] = [];
 
 export { feed, actors, connected, npcMarkerIds, npcMarkers, damageByTarget };
+
+/**
+ * The number of steps the normalized coordinates are scaled to.
+ *
+ * The plugin sends the positions as integers, scaled by this factor. It
+ * mirrors `Npc::QuantizedMarker::kScale` of the plugin.
+ */
+const POSITION_SCALE = 10000;
+
+/**
+ * The margin around the viewport that is still drawn.
+ *
+ * The plugin shifts the positions by this margin before it quantizes them, so
+ * a quantized position is never negative. It mirrors
+ * `Npc::QuantizedMarker::kMargin` of the plugin.
+ */
+const POSITION_MARGIN = 0.05;
 
 const parseUpdate = (payload: unknown): DamageUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -77,72 +123,94 @@ const parseUpdate = (payload: unknown): DamageUpdate | null => {
 };
 
 /**
- * Adds the damage of a single event to the damage map.
+ * Adds the damage of a single event to the damage of its target.
  *
  * The amount of a target is the sum of all the hits it took, so the number
  * grows with every hit. The kind of the most recent hit is kept as well, it
  * colours the number.
  */
-const addDamage = (previous: Map<string, TargetDamage>, a_event: DamageEvent): Map<string, TargetDamage> => {
-  const next = new Map(previous);
+const addDamage = (a_event: DamageEvent) => {
+  const id = a_event.targetId;
+  const current = damageByTarget[id];
 
-  const current = next.get(a_event.targetId);
   const entry: TargetDamage = {
     amount: (current?.amount ?? 0) + a_event.damage,
     kind: resolveKind(a_event.kind),
   };
 
-  // Re-inserting the entry moves the target to the end of the map, so the
-  // oldest entry is the one that was hit the longest time ago.
-  next.delete(a_event.targetId);
-  next.set(a_event.targetId, entry);
+  // Only the entry of the target is written, so the numbers above the other
+  // heads are not drawn again.
+  setDamageByTarget(id, entry);
 
-  // The oldest entry is dropped when the map grows past its budget.
-  while (next.size > MAX_DAMAGE_TARGETS) {
-    const oldest = next.keys().next();
-    if (oldest.done) {
-      break;
-    }
-    next.delete(oldest.value);
+  // The target moves to the end of the order, so the oldest one is the one
+  // that was hit the longest time ago.
+  const index = damageOrder.indexOf(id);
+
+  if (index >= 0) {
+    damageOrder.splice(index, 1);
   }
 
-  return next;
+  damageOrder.push(id);
+
+  // The oldest targets are dropped once the damage grows past its budget.
+  while (damageOrder.length > MAX_DAMAGE_TARGETS) {
+    const oldest = damageOrder.shift();
+
+    if (oldest === undefined) {
+      break;
+    }
+
+    const next: Record<string, TargetDamage> = {};
+
+    for (const target of Object.keys(damageByTarget)) {
+      if (target !== oldest) {
+        const entry = damageByTarget[target];
+
+        next[target] = {
+          amount: entry.amount,
+          kind: entry.kind,
+        };
+      }
+    }
+
+    setDamageByTarget(reconcile(next));
+  }
 };
 
 /**
- * Builds the damage map out of a complete state.
+ * Builds the damage out of a complete state.
  *
  * The aggregates of the plugin hold the damage every actor took over the
- * whole session, so they are the base of the map. The hits of the actors that
+ * whole session, so they are the base of the damage. The hits of the actors that
  * are not part of the aggregates are added from the events.
  */
-const buildDamageMap = (a_actors: ActorStats[], a_events: DamageEvent[]): Map<string, TargetDamage> => {
-  const map = new Map<string, TargetDamage>();
+const buildDamage = (a_actors: ActorStats[], a_events: DamageEvent[]): Record<string, TargetDamage> => {
+  const map: Record<string, TargetDamage> = {};
 
   for (const actor of a_actors) {
     if (actor.damageTaken <= 0) {
       continue;
     }
 
-    map.set(actor.id, {
+    map[actor.id] = {
       amount: actor.damageTaken,
       kind: dominantKind(actor.takenByKind),
-    });
+    };
   }
 
   // The hits of an actor that is part of the aggregates are already counted.
-  const aggregated = new Set(map.keys());
+  const aggregated = new Set(Object.keys(map));
 
   for (const event of a_events) {
     if (aggregated.has(event.targetId)) {
       continue;
     }
 
-    const current = map.get(event.targetId);
-    map.set(event.targetId, {
+    const current = map[event.targetId];
+    map[event.targetId] = {
       amount: (current?.amount ?? 0) + event.damage,
       kind: resolveKind(event.kind),
-    });
+    };
   }
 
   return map;
@@ -160,14 +228,15 @@ const applyUpdate = (payload: string) => {
   if (update.type === 'snapshot') {
     setFeed(Array.isArray(update.events) ? update.events.slice(0, MAX_FEED_ENTRIES) : []);
 
-    // A snapshot carries the complete state, so the damage map is rebuilt
+    // A snapshot carries the complete state, so the damage is rebuilt
     // instead of being extended.
-    setDamageByTarget(
-      buildDamageMap(
-        Array.isArray(update.actors) ? update.actors : [],
-        Array.isArray(update.events) ? update.events : [],
-      ),
+    const damage = buildDamage(
+      Array.isArray(update.actors) ? update.actors : [],
+      Array.isArray(update.events) ? update.events : [],
     );
+
+    setDamageByTarget(reconcile(damage));
+    damageOrder = Object.keys(damage);
 
     return;
   }
@@ -175,7 +244,7 @@ const applyUpdate = (payload: string) => {
   const event = update.event;
   if (event) {
     setFeed((previous) => [event, ...previous].slice(0, MAX_FEED_ENTRIES));
-    setDamageByTarget((previous) => addDamage(previous, event));
+    addDamage(event);
   }
 };
 
@@ -191,9 +260,6 @@ const sweepFeed = () => {
     return alive.length === previous.length ? previous : alive;
   });
 };
-
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value);
 
 const parseNpcIdsUpdate = (payload: unknown): NpcIdsUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -212,14 +278,14 @@ const parseNpcIdsUpdate = (payload: unknown): NpcIdsUpdate | null => {
   }
 };
 
-const parseNpcMarkersUpdate = (payload: unknown): NpcMarkersUpdate | null => {
+const parseNpcNamesUpdate = (payload: unknown): NpcNamesUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(payload) as NpcMarkersUpdate;
-    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npcMarkers') {
+    const parsed = JSON.parse(payload) as NpcNamesUpdate;
+    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npcNames') {
       return null;
     }
     return parsed;
@@ -230,10 +296,46 @@ const parseNpcMarkersUpdate = (payload: unknown): NpcMarkersUpdate | null => {
 };
 
 /**
+ * Applies the names of the NPCs that entered the screen.
+ *
+ * The plugin sends the names in their own message and only for the NPCs that
+ * the view does not know yet, so the names of the visible NPCs are kept in a
+ * map of their own.
+ */
+const applyNpcNamesUpdate = (payload: string) => {
+  const update = parseNpcNamesUpdate(payload);
+  if (!update) {
+    return;
+  }
+
+  if (!update.names || typeof update.names !== 'object') {
+    return;
+  }
+
+  batch(() => {
+    for (const [id, name] of Object.entries(update.names)) {
+      if (!id || typeof name !== 'string') {
+        continue;
+      }
+
+      npcNames.set(id, name);
+
+      // The marker of the NPC may already exist, then its name is updated
+      // right away. Otherwise the name is picked up when the ids arrive.
+      if (npcMarkers[id]) {
+        setNpcMarkers(id, 'name', name);
+      }
+    }
+  });
+};
+
+/**
  * Applies the ids of the NPCs that are currently visible on the screen.
  *
  * The plugin only sends the ids when an NPC entered or left the screen, so
- * the list is replaced with the complete set of the visible NPCs.
+ * the list is replaced with the complete set of the visible NPCs. The order
+ * of the list matters: the frames of the positions address their markers by
+ * the index of the NPC in it.
  */
 const applyNpcIdsUpdate = (payload: string) => {
   const update = parseNpcIdsUpdate(payload);
@@ -245,44 +347,86 @@ const applyNpcIdsUpdate = (payload: string) => {
     ? update.ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
     : [];
 
+  npcOrder = ids;
   setNpcMarkerIds(ids);
+
+  // The markers that stay keep their position, the new ones start without a
+  // position and the ones that left the screen are dropped.
+  const next: Record<string, NpcMarker> = {};
+
+  for (const id of ids) {
+    const current = npcMarkers[id];
+
+    next[id] = {
+      id,
+      name: npcNames.get(id) ?? current?.name ?? '',
+      x: current?.x ?? 0,
+      y: current?.y ?? 0,
+      r: current?.r ?? 0,
+      placed: current?.placed ?? false,
+    };
+  }
+
+  setNpcMarkers(reconcile(next));
+
+  // The names of the NPCs that left the screen are dropped as well.
+  for (const id of Array.from(npcNames.keys())) {
+    if (!next[id]) {
+      npcNames.delete(id);
+    }
+  }
 };
 
 /**
  * Applies the heads of the NPCs that are currently visible on the screen.
  *
- * The payload replaces the previous markers completely, so an NPC that left
- * the screen disappears without a separate "remove" message.
+ * A frame is a list of the tuples "index:x,y,r", separated by semicolons. The
+ * index is the position of the NPC in the list of the ids, the numbers are the
+ * quantized positions of the head.
+ *
+ * Only the markers that really moved are part of a frame, so the markers that
+ * did not move keep the position they already have.
  */
 const applyNpcMarkersUpdate = (payload: string) => {
-  const update = parseNpcMarkersUpdate(payload);
-  if (!update) {
+  if (typeof payload !== 'string' || payload.length === 0) {
     return;
   }
 
-  const markers = new Map<string, NpcMarker>();
-
-  if (update.markers && typeof update.markers === 'object') {
-    for (const [id, marker] of Object.entries(update.markers)) {
-      if (!id || !marker || !isFiniteNumber(marker.x) || !isFiniteNumber(marker.y) || !isFiniteNumber(marker.r)) {
+  batch(() => {
+    for (const chunk of payload.split(';')) {
+      if (!chunk) {
         continue;
       }
 
-      if (markers.has(id)) {
+      const separator = chunk.indexOf(':');
+      if (separator <= 0) {
         continue;
       }
 
-      markers.set(id, {
-        id,
-        name: typeof marker.name === 'string' ? marker.name : '',
-        x: marker.x,
-        y: marker.y,
-        r: marker.r,
-      });
+      const id = npcOrder[Number(chunk.slice(0, separator))];
+      if (!id || !npcMarkers[id]) {
+        continue;
+      }
+
+      const values = chunk.slice(separator + 1).split(',');
+      if (values.length < 3) {
+        continue;
+      }
+
+      const x = Number(values[0]) / POSITION_SCALE - POSITION_MARGIN;
+      const y = Number(values[1]) / POSITION_SCALE - POSITION_MARGIN;
+      const r = Number(values[2]) / POSITION_SCALE;
+
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r)) {
+        continue;
+      }
+
+      setNpcMarkers(id, 'x', x);
+      setNpcMarkers(id, 'y', y);
+      setNpcMarkers(id, 'r', r);
+      setNpcMarkers(id, 'placed', true);
     }
-  }
-
-  setNpcMarkers(markers);
+  });
 };
 
 declare global {
@@ -292,6 +436,9 @@ declare global {
 
     /** Called by the plugin when the set of the visible NPCs changed. */
     onNpcIdsUpdate?: (payload: string) => void;
+
+    /** Called by the plugin when NPCs entered the screen. */
+    onNpcNamesUpdate?: (payload: string) => void;
 
     /** Called by the plugin for every update of the visible NPC heads. */
     onNpcMarkersUpdate?: (payload: string) => void;
@@ -312,6 +459,7 @@ declare global {
 export const initPluginOnWindow = () => {
   window.onDamageUpdate = applyUpdate;
   window.onNpcIdsUpdate = applyNpcIdsUpdate;
+  window.onNpcNamesUpdate = applyNpcNamesUpdate;
   window.onNpcMarkersUpdate = applyNpcMarkersUpdate;
 
   window.setInterval(sweepFeed, FEED_SWEEP_MS);

@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <exception>
+#include <unordered_set>
 
 namespace Npc
 {
@@ -267,7 +268,6 @@ namespace Npc
 			}
 
 			a_marker.id = a_actor->GetFormID();
-			a_marker.name = ActorUtil::SafeName(a_actor);
 			a_marker.x = x;
 			a_marker.y = y;
 			a_marker.radius = screenRadius;
@@ -310,6 +310,18 @@ namespace Npc
 		return singleton;
 	}
 
+	const std::string& Tracker::ResolveName(RE::Actor* a_actor, Damage::ActorId a_id)
+	{
+		if (const auto it = _names.find(a_id); it != _names.end()) {
+			return it->second;
+		}
+
+		// The name of an NPC does not change while it is on the screen, so it
+		// is read from the engine only once. The reference stays valid, the
+		// map only rehashes its buckets.
+		return _names.emplace(a_id, ActorUtil::SafeName(a_actor)).first->second;
+	}
+
 	void Tracker::Collect()
 	{
 		_markers.clear();
@@ -340,6 +352,8 @@ namespace Npc
 				headName = fixedStrings->npcHead;
 			}
 
+			std::unordered_set<Damage::ActorId> visible;
+
 			processLists->ForAllActors([&](RE::Actor* a_actor) -> RE::BSContainer::ForEachResult {
 				try {
 					if (!IsTrackable(a_actor)) {
@@ -349,6 +363,11 @@ namespace Npc
 					Marker marker;
 
 					if (BuildMarker(a_actor, camera, headName, marker)) {
+						// The name is read from the engine only when the NPC is
+						// seen for the first time.
+						marker.name = ResolveName(a_actor, marker.id);
+						visible.insert(marker.id);
+
 						_markers.push_back(std::move(marker));
 					}
 				}
@@ -361,6 +380,17 @@ namespace Npc
 
 				return RE::BSContainer::ForEachResult::kContinue;
 			});
+
+			// The names of the NPCs that left the screen are dropped, so the
+			// cache does not grow over the session.
+			for (auto it = _names.begin(); it != _names.end();) {
+				if (visible.count(it->first) == 0) {
+					it = _names.erase(it);
+				}
+				else {
+					++it;
+				}
+			}
 		}
 		catch (const std::exception& a_error) {
 			logger::error("NPC tracker: failed to collect the visible NPCs: {}", a_error.what());

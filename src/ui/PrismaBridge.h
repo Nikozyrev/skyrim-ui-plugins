@@ -6,8 +6,8 @@
 
 #include <atomic>
 #include <mutex>
-#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace UI
@@ -57,20 +57,15 @@ namespace UI
 		/// Sends the complete state (aggregates + recent events) to the view.
 		void SendSnapshot();
 
-		/// Sends the ids of the NPCs that are currently visible on the screen.
-		///
-		/// The ids are the key of the markers of the view, so they are only
-		/// sent when the set of the visible NPCs really changed: an NPC that
-		/// entered or left the screen. While the set stays the same, the view
-		/// keeps the elements it already drew.
-		///
-		/// The set of the ids that were sent the last time is kept by the
-		/// bridge, so the caller only has to pass the current set.
-		void SendNpcIds(const std::set<Damage::ActorId>& a_ids);
-
 		/// Sends the heads of the NPCs that are currently visible on the screen.
-		/// The markers are keyed by the form id of the NPC.
-		/// The payload replaces the markers of the previous update completely.
+		///
+		/// The markers are keyed by the form id of the NPC. The payload
+		/// replaces the markers of the previous update completely.
+		///
+		/// The bridge takes care of the traffic itself: the table of the
+		/// visible NPCs (their ids and their names) is only sent when it
+		/// really changed, and a frame of the positions is only sent when a
+		/// marker really moved.
 		void SendNpcMarkers(const std::vector<Npc::Marker>& a_markers);
 
 	private:
@@ -80,11 +75,11 @@ namespace UI
 		/// view. Returns false when the UI is not ready.
 		bool Send(const char* a_function, const std::string& a_payload);
 
-		/// Forgets the ids of the NPCs that were sent the last time.
+		/// Forgets the NPC state that was sent to the view.
 		///
-		/// The view starts with an empty list of markers, so the ids have to
-		/// be sent again after the view announced itself.
-		void ResetNpcIds();
+		/// The view starts with an empty list of markers, so the table and the
+		/// positions have to be sent again after the view announced itself.
+		void ResetNpcState();
 
 		PRISMA_UI_API::IVPrismaUI1* _api = nullptr;
 
@@ -101,12 +96,17 @@ namespace UI
 		/// at the same time.
 		std::mutex _sendMutex;
 
-		/// The ids of the NPCs that were sent to the view the last time. The
-		/// set decides whether the ids have to be sent again.
-		std::set<Damage::ActorId> _npcIds;
+		/// Guards the NPC state below, so that the game thread and the
+		/// PrismaUI thread never touch it at the same time.
+		std::mutex _npcMutex;
 
-		/// Guards the set of the sent NPC ids, so that it is never touched
-		/// while a payload is on its way to the view.
-		std::mutex _npcIdsMutex;
+		/// The ids of the visible NPCs that the view knows.
+		///
+		/// The ids are in the order of the indexes that the frames of the
+		/// positions use, so the order matters as well as the content.
+		std::vector<Damage::ActorId> _npcIds;
+
+		/// The positions of the visible NPCs that the view knows.
+		std::unordered_map<Damage::ActorId, Npc::QuantizedMarker> _npcFrame;
 	};
 }

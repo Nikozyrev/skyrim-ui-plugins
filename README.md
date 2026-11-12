@@ -140,7 +140,14 @@ numbers at any resolution:
 | `r`   | radius of the head as a fraction of the height of the screen   |
 
 `Npc::Overlay` drives the tracker as a SKSE game thread task and refreshes the
-markers at most every 50 ms. The overlay stays idle until the view is up.
+markers at most every 16 ms, so at most 60 times per second. The overlay stays
+idle until the view is up.
+
+The positions are quantized to integers before they leave the plugin: they are
+scaled by 10000 and shifted by 0.05 of the screen, so a quantized coordinate is
+never negative. A float32 needs up to 19 characters as text, an integer four,
+and a movement that is smaller than a fraction of a pixel does not change the
+value at all.
 
 ### Damage above the heads
 
@@ -148,32 +155,41 @@ The id of a marker and the `targetId` of a damage event are the same form id in
 the same `%08X` notation, so the view can look the damage of a marker up
 directly.
 
-The view keeps a map of the damage per target id. Every incoming damage event
-adds its amount to the entry of its target, and the kind of the most recent hit
-colours the number. A snapshot rebuilds the map from the aggregates of the
-plugin, so the damage is not counted twice and the overlay starts from a correct
-state after a save was loaded.
+The view keeps the damage per target id in a Solid store. Every incoming damage
+event adds its amount to the entry of its target, and the kind of the most
+recent hit colours the number. A snapshot rebuilds the store from the
+aggregates of the plugin, so the damage is not counted twice and the overlay
+starts from a correct state after a save was loaded. Because the store is
+written point by point, a hit only redraws the number above that one head.
 
 The markers arrive at up to 60 times per second, so the view renders them with a
 keyed list: the ids are the key of the list, the elements are reused between the
-frames and only their position is updated. The number itself is recreated with
-every hit, which restarts the animation that makes it pop up.
+frames and only their position is updated. The markers live in a Solid store
+instead of a signal, so a frame only touches the markers that really moved and
+only those are drawn again. The number itself is recreated with every hit,
+which restarts the animation that makes it pop up.
 
 The ids of the visible NPCs travel on their own channel and only when the set
 of the visible NPCs changed, so the list of the view stays stable while the
-NPCs only move around.
+NPCs only move around. Their names travel on a third channel and only for the
+NPCs that entered the screen: a name never changes, so it is read from the
+engine once per NPC and sent once per NPC as well.
 
 ### Plugin ↔ view bridge
 
-The plugin talks to the view through three global JavaScript functions:
+The plugin talks to the view through four global JavaScript functions:
 
 ```js
 window.onDamageUpdate(JSON.stringify(payload));
 window.onNpcIdsUpdate(JSON.stringify(payload));
-window.onNpcMarkersUpdate(JSON.stringify(payload));
+window.onNpcNamesUpdate(JSON.stringify(payload));
+window.onNpcMarkersUpdate(frame);
 ```
 
-The payload is always a JSON string, so it can never be interpreted as code.
+The damage payloads are always a JSON string, so they can never be
+interpreted as code. The frame of the head positions is a plain string of
+numbers, which is even cheaper: it is parsed by hand and never by `JSON.parse`.
+
 Four payload types exist:
 
 ```jsonc
@@ -186,23 +202,37 @@ Four payload types exist:
 // the ids of the NPCs that are visible on the screen
 { "type": "npcIds", "ids": [ "000ABCDE", "0000BEEF" ] }
 
-// the heads of the NPCs that are visible on the screen, keyed by their id
-{ "type": "npcMarkers", "markers": { "000ABCDE": { "id": "000ABCDE", "name": "Bandit", "x": 0.42, "y": 0.31, "r": 0.02 } } }
+// the names of the NPCs that entered the screen, keyed by their id
+{ "type": "npcNames", "names": { "000ABCDE": "Bandit" } }
 ```
 
 An `npcIds` payload replaces the ids of the previous update completely, so an
 NPC that left the screen disappears without a separate "remove" message. It is
-only sent when an NPC entered or left the screen: the bridge keeps the set of
-the ids it sent the last time and compares it with the current one.
+only sent when the set of the visible NPCs changed: the bridge keeps the ids
+it sent the last time and compares them with the current ones. The order of
+the list is part of the protocol, because a frame addresses its markers by the
+index of the NPC in it.
 
-An `npcMarkers` payload replaces the markers of the previous update completely.
-The markers arrive with every frame, because the NPCs move around.
+An `npcNames` payload only carries the NPCs that the view does not know yet,
+so the names of the NPCs that are already on the screen are never sent twice.
+The names arrive before the ids, so a marker is never drawn without its name.
+
+A frame carries the positions of the heads:
+
+```
+0:10423,20155,120;1:9877,20310,95
+```
+
+Every tuple is `index:x,y,r`, separated by semicolons. The index is the
+position of the NPC in the list of the ids, the numbers are the quantized
+positions of the head. Only the markers that really moved are part of a frame,
+so a frame is empty - and not sent at all - while nothing moves.
 
 The view registers `window.onViewReady` as well and calls it once its own
 handler is installed. The plugin answers with a snapshot, which closes the race
 between the view being created and the view script being evaluated. The NPC
 channels only start after that handshake, because they need the view to know
-the `onNpcIdsUpdate` and `onNpcMarkersUpdate` functions.
+the `onNpcIdsUpdate`, `onNpcNamesUpdate` and `onNpcMarkersUpdate` functions.
 
 The view draws the damage number of a marker with a single CSS transform that
 carries both the position and the offset above the head:

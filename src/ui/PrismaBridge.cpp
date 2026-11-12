@@ -7,6 +7,9 @@
 
 #include <cstdio>
 #include <exception>
+#include <string>
+#include <unordered_set>
+#include <utility>
 
 using JSON = nlohmann::json;
 
@@ -18,9 +21,11 @@ namespace UI
 		constexpr auto kUpdateFunction = "onDamageUpdate";
 
 		/// Name of the JavaScript entry point the NPC head overlay listens on.
-		/// The ids of the visible NPCs and their markers use two separate
-		/// functions: the ids change far less often than the markers.
+		/// The ids of the visible NPCs, their names and their positions use
+		/// three separate functions: the ids change far less often than the
+		/// positions and the names change even less often than the ids.
 		constexpr auto kNpcIdsFunction = "onNpcIdsUpdate";
+		constexpr auto kNpcNamesFunction = "onNpcNamesUpdate";
 		constexpr auto kNpcMarkersFunction = "onNpcMarkersUpdate";
 
 		/// PrismaUI calls this plain function pointer once the view is ready.
@@ -98,9 +103,9 @@ namespace UI
 			return actors;
 		}
 
-		/// The ids of the visible NPCs, in the same notation the markers and
-		/// the damage events use.
-		JSON IdsToJson(const std::set<Damage::ActorId>& a_ids)
+		/// The ids of the visible NPCs, in the order of the indexes that the
+		/// frames of the positions use.
+		JSON NpcIdsToJson(const std::vector<Damage::ActorId>& a_ids)
 		{
 			JSON ids = JSON::array();
 
@@ -108,25 +113,39 @@ namespace UI
 				ids.push_back(FormIdToString(id));
 			}
 
-			return ids;
+			return JSON{
+				{ "type", "npcIds" },
+				{ "ids", ids },
+			};
 		}
 
-		/// The heads of the visible NPCs, keyed by the form id of the NPC.
-		JSON MarkersToJson(const std::vector<Npc::Marker>& a_markers)
+		/// Builds a frame of the positions of the visible NPCs.
+		///
+		/// A frame is a list of the tuples "index:x,y,r", separated by
+		/// semicolons. The index is the position of the NPC in the list of the
+		/// ids, so a frame only carries the numbers that really changed.
+		std::string BuildFrame(const std::vector<Npc::QuantizedMarker>& a_values,
+							   const std::vector<std::size_t>& a_indices)
 		{
-			JSON markers = JSON::object();
+			std::string frame;
 
-			for (const auto& marker : a_markers) {
-				markers[FormIdToString(marker.id)] = JSON{
-					{ "id", FormIdToString(marker.id) },
-					{ "name", marker.name },
-					{ "x", marker.x },
-					{ "y", marker.y },
-					{ "r", marker.radius },
-				};
+			for (const auto index : a_indices) {
+				if (!frame.empty()) {
+					frame.push_back(';');
+				}
+
+				const auto& value = a_values[index];
+
+				frame += std::to_string(index);
+				frame.push_back(':');
+				frame += std::to_string(value.x);
+				frame.push_back(',');
+				frame += std::to_string(value.y);
+				frame.push_back(',');
+				frame += std::to_string(value.r);
 			}
 
-			return markers;
+			return frame;
 		}
 	}
 
@@ -210,7 +229,7 @@ namespace UI
 	{
 		_domReady.store(true);
 		logger::info("PrismaUI view is ready, pushing the damage overlay state.");
-		ResetNpcIds();
+		ResetNpcState();
 		SendSnapshot();
 	}
 
@@ -221,17 +240,18 @@ namespace UI
 		_viewReady.store(true);
 
 		logger::info("PrismaUI view announced itself, pushing the damage overlay state.");
-		ResetNpcIds();
+		ResetNpcState();
 		SendSnapshot();
 	}
 
-	void Bridge::ResetNpcIds()
+	void Bridge::ResetNpcState()
 	{
-		// The view starts with an empty list of markers, so the ids of the
-		// visible NPCs have to be sent again even when the set did not
-		// change since the last update.
-		std::lock_guard<std::mutex> lock(_npcIdsMutex);
+		// The view starts with an empty list of markers, so the table and the
+		// positions have to be sent again even when they did not change since
+		// the last update.
+		std::lock_guard<std::mutex> lock(_npcMutex);
 		_npcIds.clear();
+		_npcFrame.clear();
 	}
 
 	bool Bridge::IsReady() const
@@ -279,40 +299,6 @@ namespace UI
 		Send(kUpdateFunction, payload.dump());
 	}
 
-	void Bridge::SendNpcIds(const std::set<Damage::ActorId>& a_ids)
-	{
-		// The NPC channel is only used once the view announced itself: before
-		// that the view does not know the JavaScript function yet.
-		if (!_api || !_viewReady.load()) {
-			return;
-		}
-
-		// The set of the visible NPCs changes far less often than the markers:
-		// the NPCs stay on the screen while they only move around. The ids are
-		// therefore only sent when an NPC entered or left the screen.
-		{
-			std::lock_guard<std::mutex> lock(_npcIdsMutex);
-
-			if (_npcIds == a_ids) {
-				return;
-			}
-		}
-
-		JSON payload{
-			{ "type", "npcIds" },
-			{ "ids", IdsToJson(a_ids) },
-		};
-
-		// The set is only remembered when the payload made it to the view,
-		// otherwise it would never be sent again.
-		if (!Send(kNpcIdsFunction, payload.dump())) {
-			return;
-		}
-
-		std::lock_guard<std::mutex> lock(_npcIdsMutex);
-		_npcIds = a_ids;
-	}
-
 	void Bridge::SendNpcMarkers(const std::vector<Npc::Marker>& a_markers)
 	{
 		// The NPC channel is only used once the view announced itself: before
@@ -321,12 +307,97 @@ namespace UI
 			return;
 		}
 
-		JSON payload{
-			{ "type", "npcMarkers" },
-			{ "markers", MarkersToJson(a_markers) },
-		};
+		std::lock_guard<std::mutex> lock(_npcMutex);
 
-		Send(kNpcMarkersFunction, payload.dump());
+		// The ids of the visible NPCs, in the order of the indexes that the
+		// frames of the positions use.
+		std::vector<Damage::ActorId> ids;
+		ids.reserve(a_markers.size());
+
+		for (const auto& marker : a_markers) {
+			ids.push_back(marker.id);
+		}
+
+		// The names of the NPCs that the view does not know yet. A name never
+		// changes, so it is only sent when an NPC enters the screen.
+		std::unordered_set<Damage::ActorId> known(_npcIds.begin(), _npcIds.end());
+		JSON names = JSON::object();
+
+		for (const auto& marker : a_markers) {
+			if (known.count(marker.id) == 0) {
+				names[FormIdToString(marker.id)] = std::string(marker.name);
+			}
+		}
+
+		// The order of the ids is part of the protocol: a frame addresses its
+		// markers by the index of the NPC in the list of the ids.
+		const bool idsChanged = ids != _npcIds;
+
+		// The positions are quantized, so a movement that is smaller than a
+		// fraction of a pixel does not show up in the frame at all.
+		std::vector<Npc::QuantizedMarker> values;
+		values.reserve(a_markers.size());
+
+		for (const auto& marker : a_markers) {
+			values.push_back(Npc::QuantizedMarker::FromMarker(marker));
+		}
+
+		// The positions the view knows from now on.
+		std::unordered_map<Damage::ActorId, Npc::QuantizedMarker> nextFrame;
+		nextFrame.reserve(a_markers.size());
+
+		for (std::size_t i = 0; i < a_markers.size(); ++i) {
+			nextFrame[a_markers[i].id] = values[i];
+		}
+
+		// Only the markers that really moved are sent. When the ids changed,
+		// the indexes of the frames shift, so the whole frame is sent again.
+		std::vector<std::size_t> changed;
+
+		for (std::size_t i = 0; i < a_markers.size(); ++i) {
+			if (idsChanged) {
+				changed.push_back(i);
+				continue;
+			}
+
+			const auto it = _npcFrame.find(a_markers[i].id);
+
+			if (it == _npcFrame.end() || it->second != values[i]) {
+				changed.push_back(i);
+			}
+		}
+
+		// The names come first: the view looks them up by the id of the NPC.
+		if (!names.empty()) {
+			JSON payload{
+				{ "type", "npcNames" },
+				{ "names", names },
+			};
+
+			if (!Send(kNpcNamesFunction, payload.dump())) {
+				return;
+			}
+		}
+
+		if (idsChanged) {
+			if (!Send(kNpcIdsFunction, NpcIdsToJson(ids).dump())) {
+				return;
+			}
+
+			_npcIds = ids;
+		}
+
+		if (changed.empty()) {
+			// Nothing moved, so the view still shows the right positions.
+			_npcFrame = std::move(nextFrame);
+			return;
+		}
+
+		if (!Send(kNpcMarkersFunction, BuildFrame(values, changed))) {
+			return;
+		}
+
+		_npcFrame = std::move(nextFrame);
 	}
 
 	bool Bridge::Send(const char* a_function, const std::string& a_payload)

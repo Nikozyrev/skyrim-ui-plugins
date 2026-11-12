@@ -2,7 +2,14 @@
 
 #include "npc/NpcTypes.h"
 
+#include <string>
+#include <unordered_map>
 #include <vector>
+
+namespace RE
+{
+	class Actor;
+}
 
 namespace Npc
 {
@@ -24,6 +31,16 @@ namespace Npc
 	private:
 		Tracker() = default;
 
+		/// The display name of an actor, cached by its form id.
+		///
+		/// The name of an NPC does not change while it is on the screen, so it
+		/// is read from the engine only once per NPC instead of once per
+		/// frame.
+		[[nodiscard]] const std::string& ResolveName(RE::Actor* a_actor, Damage::ActorId a_id);
+
 		std::vector<Marker> _markers;
+
+		/// The names of the NPCs that were seen during the last collection.
+		std::unordered_map<Damage::ActorId, std::string> _names;
 	};
 }

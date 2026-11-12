@@ -73,6 +73,7 @@ body {
  */
 .npc-damage-value {
   display: inline-block;
+  transform: translate(-50%, -100%);
   /* animation: npc-damage-pop 260ms cubic-bezier(0.22, 1, 0.36, 1); */
 }
 

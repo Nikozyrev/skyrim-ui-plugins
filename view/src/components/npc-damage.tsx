@@ -1,4 +1,11 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import {
+  For,
+  Show,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from 'solid-js';
 import { damageByTarget, npcMarkerIds, npcMarkers } from '../plugin/plugin';
 import { DAMAGE_KIND_TEXT } from '../plugin/damage-colors';
 import type { NpcMarker } from '../plugin/types';
@@ -45,7 +52,7 @@ const buildTransform = (marker: NpcMarker, view: Viewport): string => {
   const y = (1 - marker.y) * view.height;
   const radius = Math.max(marker.r * view.height, MIN_RADIUS);
 
-  return `translate(${x}px, ${y - radius}px) translate(-50%, -100%)`;
+  return `translate(${x}px, ${y - radius}px)`; // translate(-50%, -100%)
 };
 
 /**
@@ -62,6 +69,20 @@ const buildFontSize = (marker: NpcMarker, view: Viewport): number => {
 
 const formatAmount = (value: number) => Math.round(value).toString();
 
+const Damage = (props: { id: string }) => {
+  const targetDamage = createMemo(() => damageByTarget[props.id]);
+
+  return (
+    <Show when={targetDamage()}>
+      {(damage) => (
+        <span class={`npc-damage-value ${DAMAGE_KIND_TEXT[damage().kind]}`}>
+          {formatAmount(damage().amount)}
+        </span>
+      )}
+    </Show>
+  );
+};
+
 /**
  * The damage a single NPC received.
  *
@@ -69,32 +90,21 @@ const formatAmount = (value: number) => Math.round(value).toString();
  * plugin sends as the target of a damage event.
  */
 const NpcDamage = (props: { id: string }) => {
-  const marker = () => npcMarkers().get(props.id);
-  const damage = () => damageByTarget().get(props.id);
+  const npcMarker = createMemo(() => npcMarkers[props.id]);
+
+  const transform = createMemo(() => npcMarker() ? buildTransform(npcMarker(), viewport()) : '');
+  const fontSize = createMemo(() => npcMarker() ? `${buildFontSize(npcMarker(), viewport())}px` : '');
 
   return (
-    <Show when={marker()}>
-      {(current) => (
-        <Show when={damage()}>
-          {(taken) => (
-            <div
-              class="npc-damage"
-              style={{
-                transform: buildTransform(current(), viewport()),
-                'font-size': `${buildFontSize(current(), viewport())}px`,
-              }}
-              title={current().name}
-            >
-              <Show when={taken().amount}>
-                {(amount) => (
-                  <span class={`npc-damage-value ${DAMAGE_KIND_TEXT[taken().kind]}`}>
-                    {formatAmount(amount())}
-                  </span>
-                )}
-              </Show>
-            </div>
-          )}
-        </Show>
+    <Show when={npcMarker()?.placed ? npcMarker() : undefined}>
+      {(marker) => (
+        <div
+          class="npc-damage"
+          style={{ transform: transform(), 'font-size': fontSize() }}
+          title={marker().name}
+        >
+          <Damage id={props.id} />
+        </div>
       )}
     </Show>
   );
