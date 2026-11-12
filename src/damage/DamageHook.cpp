@@ -4,6 +4,7 @@
 #include "damage/DamageTracker.h"
 #include "damage/DamageTypes.h"
 #include "ui/PrismaBridge.h"
+#include "util/ActorUtil.h"
 
 #include <atomic>
 #include <chrono>
@@ -44,41 +45,6 @@ namespace Damage
 			using namespace std::chrono;
 			return static_cast<std::uint64_t>(
 				duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
-		}
-
-		/// The player is identified by the singleton pointer first (robust against
-		/// unusual form IDs) and by the well known player reference ID as fallback.
-		bool IsPlayer(const RE::Actor* a_actor)
-		{
-			if (!a_actor) {
-				return false;
-			}
-
-			if (const auto* player = RE::PlayerCharacter::GetSingleton(); player == a_actor) {
-				return true;
-			}
-
-			return a_actor->IsPlayerRef();
-		}
-
-		/// Display name of an actor with a safe fallback chain. Never returns null.
-		std::string SafeName(RE::Actor* a_actor)
-		{
-			if (!a_actor) {
-				return {};
-			}
-
-			if (const auto* name = a_actor->GetDisplayFullName(); name && *name) {
-				return name;
-			}
-
-			if (const auto* base = a_actor->GetBaseObject()) {
-				if (const auto* name = base->GetName(); name && *name) {
-					return name;
-				}
-			}
-
-			return "Unknown";
 		}
 
 		/// The attacker pointer comes from whoever called into the hooked vtable
@@ -124,8 +90,8 @@ namespace Damage
 				a_attacker = SanitizeAttacker(context.caster);
 			}
 
-			const bool targetIsPlayer = IsPlayer(a_target);
-			const bool attackerIsPlayer = IsPlayer(a_attacker);
+			const bool targetIsPlayer = ActorUtil::IsPlayer(a_target);
+			const bool attackerIsPlayer = ActorUtil::IsPlayer(a_attacker);
 
 			if (!targetIsPlayer && !attackerIsPlayer) {
 				return;
@@ -140,12 +106,12 @@ namespace Damage
 				event.kind = kind;
 
 				event.targetId = a_target->GetFormID();
-				event.targetName = SafeName(a_target);
+				event.targetName = ActorUtil::SafeName(a_target);
 				event.targetIsPlayer = targetIsPlayer;
 
 				if (a_attacker) {
 					event.attackerId = a_attacker->GetFormID();
-					event.attackerName = SafeName(a_attacker);
+					event.attackerName = ActorUtil::SafeName(a_attacker);
 					event.attackerIsPlayer = attackerIsPlayer;
 				}
 				else {

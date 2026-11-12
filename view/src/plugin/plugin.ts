@@ -1,5 +1,5 @@
 import { createSignal } from 'solid-js';
-import type { ActorStats, DamageEvent, DamageUpdate } from './types';
+import type { ActorStats, DamageEvent, DamageUpdate, NpcMarker, NpcUpdate } from './types';
 
 /** Maximum amount of hits kept in the live feed. */
 const MAX_FEED_ENTRIES = 12;
@@ -13,8 +13,9 @@ const FEED_SWEEP_MS = 500;
 const [feed, setFeed] = createSignal<DamageEvent[]>([]);
 const [actors, setActors] = createSignal<ActorStats[]>([]);
 const [connected, setConnected] = createSignal(false);
+const [npcMarkers, setNpcMarkers] = createSignal<NpcMarker[]>([]);
 
-export { feed, actors, connected };
+export { feed, actors, connected, npcMarkers };
 
 const parseUpdate = (payload: unknown): DamageUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -66,10 +67,66 @@ const sweepFeed = () => {
   });
 };
 
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const parseNpcUpdate = (payload: unknown): NpcUpdate | null => {
+  if (typeof payload !== 'string' || payload.length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as NpcUpdate;
+    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npc') {
+      return null;
+    }
+    return parsed;
+  } catch {
+    // A malformed payload must never break the overlay.
+    return null;
+  }
+};
+
+/**
+ * Applies the heads of the NPCs that are currently visible on the screen.
+ *
+ * The payload replaces the previous markers completely, so an NPC that left
+ * the screen disappears without a separate "remove" message.
+ */
+const applyNpcUpdate = (payload: string) => {
+  const update = parseNpcUpdate(payload);
+  if (!update) {
+    return;
+  }
+
+  const markers: NpcMarker[] = [];
+
+  if (Array.isArray(update.markers)) {
+    for (const marker of update.markers) {
+      if (!marker || !isFiniteNumber(marker.x) || !isFiniteNumber(marker.y) || !isFiniteNumber(marker.r)) {
+        continue;
+      }
+
+      markers.push({
+        id: typeof marker.id === 'string' ? marker.id : '',
+        name: typeof marker.name === 'string' ? marker.name : '',
+        x: marker.x,
+        y: marker.y,
+        r: marker.r,
+      });
+    }
+  }
+
+  setNpcMarkers(markers);
+};
+
 declare global {
   interface Window {
     /** Called by the plugin for every damage update. */
     onDamageUpdate?: (payload: string) => void;
+
+    /** Called by the plugin for every update of the visible NPC heads. */
+    onNpcUpdate?: (payload: string) => void;
 
     /** Called by the view to tell the plugin that it is ready to receive data. */
     onViewReady?: () => void;
@@ -86,6 +143,7 @@ declare global {
  */
 export const initPluginOnWindow = () => {
   window.onDamageUpdate = applyUpdate;
+  window.onNpcUpdate = applyNpcUpdate;
 
   window.setInterval(sweepFeed, FEED_SWEEP_MS);
 

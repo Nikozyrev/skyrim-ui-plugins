@@ -2,10 +2,12 @@
 
 #include "PrismaUI_API.h"
 #include "damage/DamageTypes.h"
+#include "npc/NpcTypes.h"
 
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace UI
 {
@@ -54,11 +56,16 @@ namespace UI
 		/// Sends the complete state (aggregates + recent events) to the view.
 		void SendSnapshot();
 
+		/// Sends the heads of the NPCs that are currently visible on the screen.
+		/// The payload replaces the markers of the previous update completely.
+		void SendNpcMarkers(const std::vector<Npc::Marker>& a_markers);
+
 	private:
 		Bridge() = default;
 
-		/// Serializes and pushes a payload. Returns false when the UI is not ready.
-		bool Send(const std::string& a_payload);
+		/// Serializes and pushes a payload to a JavaScript function of the
+		/// view. Returns false when the UI is not ready.
+		bool Send(const char* a_function, const std::string& a_payload);
 
 		PRISMA_UI_API::IVPrismaUI1* _api = nullptr;
 
@@ -68,6 +75,7 @@ namespace UI
 
 		std::atomic_bool _viewCreated{ false };
 		std::atomic_bool _domReady{ false };
+		std::atomic_bool _viewReady{ false };
 		std::atomic_bool _apiMissingLogged{ false };
 
 		/// Guards the PrismaUI calls so that two threads never talk to the view

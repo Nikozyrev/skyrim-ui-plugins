@@ -2,7 +2,9 @@
 
 #include "damage/DamageHook.h"
 #include "damage/DamageTracker.h"
+#include "npc/NpcOverlay.h"
 #include "ui/PrismaBridge.h"
+#include "util/GameState.h"
 
 namespace
 {
@@ -12,8 +14,10 @@ namespace
 	/// Path of the view relative to the PrismaUI "views" folder.
 	constexpr auto kViewPath = "PrismaUI-Example-UI/index.html";
 
-	/// Upper bound of the game thread poll that brings the UI up.
-	constexpr int kUiPollLimit = 900;
+	/// Upper bound of the game thread poll that brings the UI up. The poll
+	/// waits for the player to load a world, so it has to survive a long time
+	/// in the main menu.
+	constexpr int kUiPollLimit = 60 * 60 * 60 * 1000;
 
 	int g_uiPollCount = 0;
 
@@ -21,6 +25,12 @@ namespace
 	/// initializes PrismaUI's renderer.
 	void TryCreateUi()
 	{
+		// The view is created only while a world is loaded. In the main menu
+		// the overlay would sit on top of the menu and swallow its input.
+		// if (!GameState::IsWorldLoaded()) {
+		// 	return;
+		// }
+
 		auto& bridge = UI::Bridge::Get();
 
 		if (!bridge.AcquireApi()) {
@@ -35,7 +45,8 @@ namespace
 	/// The messaging interface is the primary way to learn that every plugin has
 	/// been loaded. This poll is the fallback for the case where the listener
 	/// could not be registered, and it also covers PrismaUI being loaded after
-	/// this plugin.
+	/// this plugin. It keeps running until a world is loaded, because that is
+	/// the moment the overlay is allowed to appear.
 	void PollForUi()
 	{
 		if (UI::Bridge::Get().IsViewCreated()) {
@@ -51,7 +62,7 @@ namespace
 		}
 
 		if (g_uiPollCount >= kUiPollLimit) {
-			logger::error("PrismaUI did not become available, the damage overlay stays disabled.");
+			logger::error("The overlay was not started within an hour, it stays disabled.");
 			return;
 		}
 
@@ -78,6 +89,10 @@ namespace
 
 		case SKSE::MessagingInterface::kDataLoaded:
 			OnDataLoaded();
+
+			// The NPC head overlay runs as a game thread task. It stays idle until the
+			// view is up, so it can safely be started this early.
+			Npc::Overlay::Get().Start();
 			break;
 
 		default:
@@ -105,6 +120,8 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 	// away. Damage tracking therefore works even when the messaging interface is
 	// unavailable.
 	Damage::Hook::Install();
+	
+	Npc::Overlay::InstallHook();
 
 	// The sender of a SKSE message has to be the name of a *loaded plugin*.
 	// "SKSE" is the pseudo plugin SKSE registers itself under and is the only

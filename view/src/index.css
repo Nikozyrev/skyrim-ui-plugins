@@ -37,3 +37,33 @@ body {
 .damage-row-enter {
   animation: damage-row-enter 140ms ease-out;
 }
+
+/*
+ * Layer that holds the head markers of the NPCs that are visible on the
+ * screen. It covers the whole viewport and never reacts to the mouse.
+ */
+.npc-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/*
+ * The circle is placed and sized with a single CSS transform. The element
+ * itself is a fixed 100px circle; the transform moves it to the head of the
+ * NPC and scales it down to the size the plugin measured.
+ */
+.npc-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  width: 100px;
+  height: 100px;
+  border: 5px solid rgb(239 68 68);
+  border-radius: 50%;
+  background-color: rgb(239 68 68 / 0.15);
+  transform-origin: 0 0;
+  will-change: transform;
+}

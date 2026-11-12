@@ -52,3 +52,29 @@ export type DamageUpdate = {
   /** Only set for "snapshot" updates. */
   events?: DamageEvent[] | null;
 };
+
+/** The head of a single NPC that is visible on the screen. */
+export type NpcMarker = {
+  /** Form ID of the NPC. */
+  id: string;
+
+  /** Display name of the NPC. */
+  name: string;
+
+  /** Horizontal position, 0 is the left edge of the screen and 1 the right one. */
+  x: number;
+
+  /** Vertical position, 0 is the bottom edge of the screen and 1 the top one. */
+  y: number;
+
+  /** Radius of the head circle as a fraction of the height of the screen. */
+  r: number;
+};
+
+export type NpcUpdate = {
+  /** "npc" carries the heads that are currently visible on the screen. */
+  type: 'npc';
+
+  /** The heads of the visible NPCs. */
+  markers: NpcMarker[];
+};

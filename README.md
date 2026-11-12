@@ -3,11 +3,13 @@
 A SKSE plugin that records the damage that is applied to characters in Skyrim and
 renders it as an overlay through a [PrismaUI](https://www.prismaui.dev/) view.
 
-The overlay shows two things:
+The overlay shows three things:
 
 * **Recent hits** – a live feed of the last few damage events (5 second lifetime).
 * **Totals** – the accumulated damage per character: how much each character
   dealt and how much each character took.
+* **NPC heads** – a red circle on the head of every NPC that is visible on the
+  screen.
 
 Every hit is coloured by the source of the damage, so fire, frost, shock and
 poison hits are told apart at a glance.
@@ -95,16 +97,62 @@ read the same way:
 | `poison`   | `#4cd964`  |
 | `magic`    | `#c7b8e8`  |
 
+### NPC head markers
+
+The plugin marks every NPC that is visible on the screen with a red circle on
+its head.
+
+```
+Skyrim ──► RE::ProcessLists::ForAllActors ──► Npc::Tracker
+                                                      │
+                                              UI::Bridge ◄──┘
+                                                      │
+                                                  PrismaUI view
+```
+
+`Npc::Tracker` runs on the game thread and walks the actors of the current
+game session. For every actor it
+
+* skips the player, creatures without an actor base, disabled actors, actors
+  without a model and dead bodies (`kIncludeDeadNpcs` in `NpcTracker.cpp`
+  turns the last one back on),
+* resolves the head: the head bone of the humanoid skeleton
+  (`NPCHead[Head]`) inside the model of the actor,
+* projects the head with `RE::NiCamera::WorldPtToScreenPt3` of the camera that
+  renders the world (the world camera below the camera root of the player
+  camera),
+* measures the size of the head with the very same projection: a probe point
+  one head radius above the head is projected as well, and the distance
+  between both points is the radius of the head on the screen.
+
+The tracker stays **idle while no world is loaded**: in the main menu the
+scene graph of the world is torn down, so the camera and the actors are not
+valid there. The view keeps showing the damage overlay in the main menu and
+only the head markers are switched off.
+
+The result is normalized to the viewport of the game, so the view can place the
+circles at any resolution:
+
+| Field | Meaning                                                       |
+| ----- | ------------------------------------------------------------- |
+| `x`   | 0 is the left edge of the screen, 1 the right one             |
+| `y`   | 0 is the bottom edge of the screen, 1 the top one              |
+| `r`   | radius of the circle as a fraction of the height of the screen |
+
+`Npc::Overlay` drives the tracker as a SKSE game thread task and refreshes the
+markers at most every 50 ms. The overlay stays idle until the view is up.
+
 ### Plugin ↔ view bridge
 
-The plugin talks to the view through a single global JavaScript function:
+The plugin talks to the view through two global JavaScript functions:
 
 ```js
 window.onDamageUpdate(JSON.stringify(payload));
+window.onNpcUpdate(JSON.stringify(payload));
 ```
 
 The payload is always a JSON string, so it can never be interpreted as code.
-Two payload types exist:
+Three payload types exist:
 
 ```jsonc
 // a single new hit
@@ -112,11 +160,29 @@ Two payload types exist:
 
 // the complete state
 { "type": "snapshot", "actors": [ /* ... */ ], "events": [ /* ... */ ] }
+
+// the heads of the NPCs that are visible on the screen
+{ "type": "npc", "markers": [ { "id": "000ABCDE", "name": "Bandit", "x": 0.42, "y": 0.31, "r": 0.02 } ] }
 ```
+
+An `npc` payload replaces the markers of the previous update completely, so an
+NPC that left the screen disappears without a separate "remove" message.
 
 The view registers `window.onViewReady` as well and calls it once its own
 handler is installed. The plugin answers with a snapshot, which closes the race
-between the view being created and the view script being evaluated.
+between the view being created and the view script being evaluated. The NPC
+channel only starts after that handshake, because it needs the view to know the
+`onNpcUpdate` function.
+
+The view draws a circle per marker with a single CSS transform that carries
+both the position and the size:
+
+```css
+transform: translate(960px, 540px) scale(0.4) translate(-50%, -50%);
+```
+
+The circle itself is a fixed 100px element, so the scale factor is the only
+thing that changes its size.
 
 ### Failure tolerance
 
@@ -154,6 +220,19 @@ Because of that, the plugin does not depend on the messaging interface:
 * the damage hook is installed directly in `SKSEPlugin_Load`;
 * the view is brought up by a game thread poll (`SKSE::GetTaskInterface()`),
   which also covers PrismaUI being loaded after this plugin.
+
+### The overlay only exists while a world is loaded
+
+The view is created as soon as a world is loaded, and not before. Two reasons:
+
+* in the main menu the world is torn down, so the camera and the actors of the
+  world are not valid and the head markers would read freed memory;
+* a PrismaUI view covers the whole screen. Over the main menu it swallows the
+  input: the game keeps running, but the menu stops reacting to the mouse and
+  the keyboard.
+
+`GameState::IsWorldLoaded()` in `src/util/GameState.h` answers the question.
+It is checked by the view creation and by the NPC tracker.
 
 ## Requirements
 
@@ -227,13 +306,19 @@ src/
     DamageTracker.h/.cpp thread safe aggregation
     DamageHook.h/.cpp    Actor::HandleHealthDamage and effect hooks
     DamageClassifier.h/.cpp element of a damage application
+  npc/
+    NpcTypes.h           head marker of a single NPC
+    NpcTracker.h/.cpp    collects the visible NPC heads
+    NpcOverlay.h/.cpp    game thread task that refreshes the markers
   ui/
     PrismaBridge.h/.cpp  failure tolerant PrismaUI wrapper
+  util/
+    ActorUtil.h          shared actor helpers (player check, display name)
   keyhandler/            optional input helper (not wired up)
 view/
   src/
     App.tsx              overlay layout
-    components/          live feed, totals table and colour legend
+    components/          live feed, totals table, colour legend, head markers
     plugin/              plugin ↔ view bridge, state and colour palette
 deploy.mjs               builds and deploys the plugin and the view
 .env                     deployment target (SKYRIM_MOD_PATH)
@@ -247,6 +332,8 @@ deploy.mjs               builds and deploys the plugin and the view
 | Nothing shows up, the log says the view failed | `PrismaUI/views/PrismaUI-Example-UI/index.html` is missing. Redeploy the view. |
 | The log says PrismaUI was not found            | `PrismaUI.dll` is not installed or not loaded before the game starts. |
 | No damage is recorded                          | The hook could not be installed. Check `Documents/My Games/Skyrim Special Edition/SKSE/skse64.log` for `Damage hook` messages. |
+| The overlay does not show up                   | The view is created only while a world is loaded. Check the log for `NPC tracker` and `PrismaUI view` messages. |
+| No circles are drawn on the NPCs               | The camera could not be resolved or the actors have no head. Check the log for `NPC overlay` messages. |
 | The overlay stays empty after loading a save   | Expected: the statistics are reset when a save is loaded.              |
 
 ## Credits

@@ -17,6 +17,9 @@ namespace UI
 		/// Name of the JavaScript entry point the overlay listens on.
 		constexpr auto kUpdateFunction = "onDamageUpdate";
 
+		/// Name of the JavaScript entry point the NPC head overlay listens on.
+		constexpr auto kNpcFunction = "onNpcUpdate";
+
 		/// PrismaUI calls this plain function pointer once the view is ready.
 		void OnDomReadyTrampoline(PrismaView /*a_view*/)
 		{
@@ -90,6 +93,23 @@ namespace UI
 			}
 
 			return actors;
+		}
+
+		JSON MarkersToJson(const std::vector<Npc::Marker>& a_markers)
+		{
+			JSON markers = JSON::array();
+
+			for (const auto& marker : a_markers) {
+				markers.push_back(JSON{
+					{ "id", FormIdToString(marker.id) },
+					{ "name", marker.name },
+					{ "x", marker.x },
+					{ "y", marker.y },
+					{ "r", marker.radius },
+				});
+			}
+
+			return markers;
 		}
 	}
 
@@ -178,6 +198,10 @@ namespace UI
 
 	void Bridge::OnViewReady()
 	{
+		// The view registered its handlers, so the JavaScript functions the
+		// plugin calls do exist now.
+		_viewReady.store(true);
+
 		logger::info("PrismaUI view announced itself, pushing the damage overlay state.");
 		SendSnapshot();
 	}
@@ -204,7 +228,7 @@ namespace UI
 			{ "event", EventToJson(a_event) },
 		};
 
-		Send(payload.dump());
+		Send(kUpdateFunction, payload.dump());
 	}
 
 	void Bridge::SendSnapshot()
@@ -224,10 +248,26 @@ namespace UI
 			{ "events", events },
 		};
 
-		Send(payload.dump());
+		Send(kUpdateFunction, payload.dump());
 	}
 
-	bool Bridge::Send(const std::string& a_payload)
+	void Bridge::SendNpcMarkers(const std::vector<Npc::Marker>& a_markers)
+	{
+		// The NPC channel is only used once the view announced itself: before
+		// that the view does not know the JavaScript function yet.
+		if (!_api || !_viewReady.load()) {
+			return;
+		}
+
+		JSON payload{
+			{ "type", "npc" },
+			{ "markers", MarkersToJson(a_markers) },
+		};
+
+		Send(kNpcFunction, payload.dump());
+	}
+
+	bool Bridge::Send(const char* a_function, const std::string& a_payload)
 	{
 		std::lock_guard<std::mutex> lock(_sendMutex);
 
@@ -245,7 +285,7 @@ namespace UI
 
 		// InteropCall hands the payload over as a plain string, so the payload can
 		// never be interpreted as JavaScript code. The view parses it as JSON.
-		_api->InteropCall(view, kUpdateFunction, a_payload.c_str());
+		_api->InteropCall(view, a_function, a_payload.c_str());
 		return true;
 	}
 }
