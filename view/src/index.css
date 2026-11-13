@@ -52,15 +52,27 @@ body {
 }
 
 /*
- * The number is placed with a single CSS transform: the transform moves it to
- * the head of the NPC and shifts it up, so its lower edge touches the anchor.
+ * The number is placed with a CSS transform: the transform moves it to the
+ * head of the NPC and shifts it up, so its lower edge touches the anchor.
+ *
+ * The offsets and the scale are set as custom properties by the component.
+ * The offsets are plain numbers, so the pixels are added here.
+ *
+ * The text keeps the base font size and is scaled around the anchor, so a
+ * bigger number grows upwards without moving the anchor.
  */
 .npc-damage {
   position: absolute;
   top: 0;
   left: 0;
   transform-origin: 0 0;
-  /* will-change: transform; */
+  transform: translate(
+      calc(var(--npc-damage-x, 0) * 1px),
+      calc(var(--npc-damage-y, 0) * 1px)
+    )
+    scale(var(--npc-damage-scale, 1));
+  font-size: 11px;
+  will-change: transform;
   font-weight: 700;
   line-height: 1;
   /* letter-spacing: -0.02em; */
