@@ -240,14 +240,16 @@ up.
 A frame carries the numbers above the heads:
 
 ```
-0:1042,215,1.1818;1:987,230,1.0000
+0:1042,215,1.18;1:987,230,1.00
 ```
 
 Every tuple is `index:x,y,scale`, separated by semicolons. The index is the
 position of the NPC in the list of the ids, the numbers are the plain CSS
 values of the number: the horizontal offset, the vertical offset in whole
-pixels and the scale of the font. Only the markers that really moved are part
-of a frame, so a frame is empty - and not sent at all - while nothing moves.
+pixels and the scale of the font. The scale is written with two decimals,
+because it is a whole font size divided by the base size of the stylesheet.
+Only the markers that really moved are part of a frame, so a frame is empty -
+and not sent at all - while nothing moves.
 
 The view registers `window.onViewReady` as well and calls it once its own
 handler is installed. The plugin answers with a snapshot, which closes the race

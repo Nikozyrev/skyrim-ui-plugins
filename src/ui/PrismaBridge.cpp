@@ -203,8 +203,14 @@ namespace UI
 
 				// The scale is a float, so it is written with a fixed number
 				// of decimals: the view parses it as a plain number.
+				//
+				// Two decimals are enough: the scale is the size of the font
+				// of the number divided by the base size, and both of them
+				// are whole numbers, so the scale is a fraction with a step
+				// of 1/11. The error of the rounding stays below a hundredth
+				// of a pixel and two bytes of every marker are saved.
 				char buffer[32];
-				std::snprintf(buffer, sizeof(buffer), "%.4f", value.scale);
+				std::snprintf(buffer, sizeof(buffer), "%.2f", value.scale);
 
 				frame += buffer;
 			}

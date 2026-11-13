@@ -51,15 +51,15 @@ for the exact shape.
 A frame carries the numbers above the heads and nothing else:
 
 ```
-0:1042,215,1.1818;1:987,230,1.0000
+0:1042,215,1.18;1:987,230,1.00
 ```
 
 Every tuple is `index:x,y,scale`, separated by semicolons. The index is the
 position of the NPC in the list of the ids, the numbers are the plain CSS
 values of the number: the horizontal offset, the vertical offset in whole
-pixels and the scale of the font. The plugin computes them, so the view only
-copies them into the stylesheet. Only the markers that really moved are part
-of a frame.
+pixels and the scale of the font. The scale is written with two decimals. The
+plugin computes them, so the view only copies them into the stylesheet. Only
+the markers that really moved are part of a frame.
 
 The plugin sends the positions in pixels, so the view reports the size of its
 viewport to the plugin:
