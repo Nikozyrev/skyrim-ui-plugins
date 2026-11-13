@@ -5,9 +5,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <charconv>
 #include <cstdio>
 #include <exception>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -28,6 +30,15 @@ namespace UI
 		constexpr auto kNpcNamesFunction = "onNpcNamesUpdate";
 		constexpr auto kNpcMarkersFunction = "onNpcMarkersUpdate";
 
+		/// Name of the JavaScript entry point the view uses to report the size
+		/// of its viewport. The positions of the markers are sent in pixels,
+		/// so the plugin needs that size.
+		constexpr auto kViewportFunction = "onViewportUpdate";
+
+		/// Name of the JavaScript entry point the view listens on for the
+		/// styles of the overlay.
+		constexpr auto kStyleFunction = "onStyleUpdate";
+
 		/// PrismaUI calls this plain function pointer once the view is ready.
 		void OnDomReadyTrampoline(PrismaView /*a_view*/)
 		{
@@ -38,6 +49,53 @@ namespace UI
 		void OnViewReadyTrampoline(const char* /*a_argument*/)
 		{
 			Bridge::Get().OnViewReady();
+		}
+
+		/// The view calls this whenever the size of its viewport changed.
+		void OnViewportUpdateTrampoline(const char* a_argument)
+		{
+			Bridge::Get().OnViewportUpdate(a_argument);
+		}
+
+		/// Reads an integer out of a piece of text.
+		bool ParseInt(const std::string_view a_text, int& a_value)
+		{
+			const auto result = std::from_chars(a_text.data(), a_text.data() + a_text.size(), a_value);
+
+			return result.ec == std::errc{} && result.ptr == a_text.data() + a_text.size();
+		}
+
+		/// Reads the size of the viewport out of the payload of the view.
+		///
+		/// The payload is the width and the height of the viewport, separated
+		/// by a comma: "1920,1080".
+		bool ParseViewport(const char* a_argument, Npc::Viewport& a_viewport)
+		{
+			if (!a_argument) {
+				return false;
+			}
+
+			const std::string_view payload(a_argument);
+
+			const auto separator = payload.find(',');
+
+			if (separator == std::string_view::npos) {
+				return false;
+			}
+
+			Npc::Viewport viewport;
+
+			if (!ParseInt(payload.substr(0, separator), viewport.width) ||
+				!ParseInt(payload.substr(separator + 1), viewport.height)) {
+				return false;
+			}
+
+			if (!viewport.IsValid()) {
+				return false;
+			}
+
+			a_viewport = viewport;
+			return true;
 		}
 
 		std::string FormIdToString(Damage::ActorId a_id)
@@ -121,10 +179,10 @@ namespace UI
 
 		/// Builds a frame of the positions of the visible NPCs.
 		///
-		/// A frame is a list of the tuples "index:x,y,r", separated by
+		/// A frame is a list of the tuples "index:x,y,scale", separated by
 		/// semicolons. The index is the position of the NPC in the list of the
 		/// ids, so a frame only carries the numbers that really changed.
-		std::string BuildFrame(const std::vector<Npc::QuantizedMarker>& a_values,
+		std::string BuildFrame(const std::vector<Npc::ViewMarker>& a_values,
 							   const std::vector<std::size_t>& a_indices)
 		{
 			std::string frame;
@@ -142,7 +200,13 @@ namespace UI
 				frame.push_back(',');
 				frame += std::to_string(value.y);
 				frame.push_back(',');
-				frame += std::to_string(value.r);
+
+				// The scale is a float, so it is written with a fixed number
+				// of decimals: the view parses it as a plain number.
+				char buffer[32];
+				std::snprintf(buffer, sizeof(buffer), "%.4f", value.scale);
+
+				frame += buffer;
 			}
 
 			return frame;
@@ -221,6 +285,10 @@ namespace UI
 		// even when the first DOM ready push happened too early.
 		_api->RegisterJSListener(view, "onViewReady", &OnViewReadyTrampoline);
 
+		// The positions of the markers are sent in pixels, so the view has to
+		// report the size of its viewport.
+		_api->RegisterJSListener(view, kViewportFunction, &OnViewportUpdateTrampoline);
+
 		logger::info("PrismaUI view '{}' created.", a_viewPath);
 		return true;
 	}
@@ -230,6 +298,7 @@ namespace UI
 		_domReady.store(true);
 		logger::info("PrismaUI view is ready, pushing the damage overlay state.");
 		ResetNpcState();
+		SendStyle();
 		SendSnapshot();
 	}
 
@@ -241,7 +310,25 @@ namespace UI
 
 		logger::info("PrismaUI view announced itself, pushing the damage overlay state.");
 		ResetNpcState();
+		SendStyle();
 		SendSnapshot();
+	}
+
+	void Bridge::SendStyle()
+	{
+		if (!_api) {
+			return;
+		}
+
+		// The base size of the font of the numbers is a constant of the
+		// plugin, so the stylesheet does not have to know it: the view sets
+		// the value as a global custom property of the document.
+		JSON payload{
+			{ "type", "style" },
+			{ "baseFontSize", Npc::kBaseFontSize },
+		};
+
+		Send(kStyleFunction, payload.dump());
 	}
 
 	void Bridge::ResetNpcState()
@@ -252,6 +339,39 @@ namespace UI
 		std::lock_guard<std::mutex> lock(_npcMutex);
 		_npcIds.clear();
 		_npcFrame.clear();
+	}
+
+	void Bridge::OnViewportUpdate(const char* a_argument)
+	{
+		Npc::Viewport viewport;
+
+		if (!ParseViewport(a_argument, viewport)) {
+			logger::warn("The view reported an unusable viewport size ('{}').", a_argument ? a_argument : "");
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(_npcMutex);
+
+		if (_viewport.width == viewport.width && _viewport.height == viewport.height) {
+			return;
+		}
+
+		const bool wasKnown = _viewport.IsValid();
+
+		_viewport = viewport;
+
+		// The positions are in pixels, so every marker moved to another pixel
+		// when the size of the viewport changed.
+		_npcFrame.clear();
+
+		// The size changes on every pixel while the window of the overlay is
+		// dragged, so only the first one is worth a line in the log.
+		if (wasKnown) {
+			logger::debug("The viewport of the view changed to {}x{} pixels.", viewport.width, viewport.height);
+		}
+		else {
+			logger::info("The view reported a viewport of {}x{} pixels.", viewport.width, viewport.height);
+		}
 	}
 
 	bool Bridge::IsReady() const
@@ -309,6 +429,13 @@ namespace UI
 
 		std::lock_guard<std::mutex> lock(_npcMutex);
 
+		// The positions are sent in pixels, so the view has to report the size
+		// of its viewport first. Nothing is sent before that: the view cannot
+		// place a marker without knowing where it is.
+		if (!_viewport.IsValid()) {
+			return;
+		}
+
 		// The ids of the visible NPCs, in the order of the indexes that the
 		// frames of the positions use.
 		std::vector<Damage::ActorId> ids;
@@ -333,17 +460,17 @@ namespace UI
 		// markers by the index of the NPC in the list of the ids.
 		const bool idsChanged = ids != _npcIds;
 
-		// The positions are quantized, so a movement that is smaller than a
-		// fraction of a pixel does not show up in the frame at all.
-		std::vector<Npc::QuantizedMarker> values;
+		// The positions are whole pixels, so a movement that is smaller than a
+		// pixel does not show up in the frame at all.
+		std::vector<Npc::ViewMarker> values;
 		values.reserve(a_markers.size());
 
 		for (const auto& marker : a_markers) {
-			values.push_back(Npc::QuantizedMarker::FromMarker(marker));
+			values.push_back(Npc::BuildViewMarker(marker, _viewport));
 		}
 
 		// The positions the view knows from now on.
-		std::unordered_map<Damage::ActorId, Npc::QuantizedMarker> nextFrame;
+		std::unordered_map<Damage::ActorId, Npc::ViewMarker> nextFrame;
 		nextFrame.reserve(a_markers.size());
 
 		for (std::size_t i = 0; i < a_markers.size(); ++i) {

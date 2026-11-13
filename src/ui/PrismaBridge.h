@@ -45,6 +45,13 @@ namespace UI
 		/// being created and the view script being evaluated.
 		void OnViewReady();
 
+		/// Called by the view whenever the size of its viewport changed.
+		///
+		/// The positions of the markers are sent in pixels, so the plugin has
+		/// to know the size of the viewport to convert them. The payload is
+		/// the width and the height of the viewport, separated by a comma.
+		void OnViewportUpdate(const char* a_argument);
+
 		/// True when the API is available, the view exists and its DOM is ready.
 		[[nodiscard]] bool IsReady() const;
 
@@ -57,6 +64,13 @@ namespace UI
 		/// Sends the complete state (aggregates + recent events) to the view.
 		void SendSnapshot();
 
+		/// Sends the styles of the overlay to the view.
+		///
+		/// The base size of the font of the numbers lives in the plugin, so
+		/// the view does not have to know it: it sets the value as a global
+		/// custom property of the document.
+		void SendStyle();
+
 		/// Sends the heads of the NPCs that are currently visible on the screen.
 		///
 		/// The markers are keyed by the form id of the NPC. The payload
@@ -66,6 +80,9 @@ namespace UI
 		/// visible NPCs (their ids and their names) is only sent when it
 		/// really changed, and a frame of the positions is only sent when a
 		/// marker really moved.
+		///
+		/// The positions are sent in pixels, so nothing is sent before the
+		/// view reported the size of its viewport.
 		void SendNpcMarkers(const std::vector<Npc::Marker>& a_markers);
 
 	private:
@@ -107,6 +124,13 @@ namespace UI
 		std::vector<Damage::ActorId> _npcIds;
 
 		/// The positions of the visible NPCs that the view knows.
-		std::unordered_map<Damage::ActorId, Npc::QuantizedMarker> _npcFrame;
+		std::unordered_map<Damage::ActorId, Npc::ViewMarker> _npcFrame;
+
+		/// The size of the viewport of the view, in pixels.
+		///
+		/// The view reports it, because the window of the overlay is not the
+		/// screen of the game. The size is zero as long as the view did not
+		/// report it, and the positions cannot be sent before that.
+		Npc::Viewport _viewport;
 	};
 }

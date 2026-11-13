@@ -8,6 +8,7 @@ import type {
   NpcIdsUpdate,
   NpcMarker,
   NpcNamesUpdate,
+  StyleUpdate,
   TargetDamage,
 } from './types';
 
@@ -19,6 +20,14 @@ const FEED_TTL_MS = 5000;
 
 /** How often the feed is checked for expired entries (milliseconds). */
 const FEED_SWEEP_MS = 500;
+
+/**
+ * How often the size of the viewport is reported to the plugin (milliseconds).
+ *
+ * The report is repeated until the plugin answers with a frame of the
+ * positions, so a report that was lost does not cost anything.
+ */
+const VIEWPORT_REPORT_INTERVAL_MS = 1000;
 
 /**
  * Maximum amount of targets kept in the damage map.
@@ -87,23 +96,6 @@ const [damageByTarget, setDamageByTarget] = createStore<Record<string, TargetDam
 let damageOrder: string[] = [];
 
 export { feed, actors, connected, npcMarkerIds, npcMarkers, damageByTarget };
-
-/**
- * The number of steps the normalized coordinates are scaled to.
- *
- * The plugin sends the positions as integers, scaled by this factor. It
- * mirrors `Npc::QuantizedMarker::kScale` of the plugin.
- */
-const POSITION_SCALE = 10000;
-
-/**
- * The margin around the viewport that is still drawn.
- *
- * The plugin shifts the positions by this margin before it quantizes them, so
- * a quantized position is never negative. It mirrors
- * `Npc::QuantizedMarker::kMargin` of the plugin.
- */
-const POSITION_MARGIN = 0.05;
 
 const parseUpdate = (payload: unknown): DamageUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -295,6 +287,32 @@ const parseNpcNamesUpdate = (payload: unknown): NpcNamesUpdate | null => {
   }
 };
 
+const parseStyleUpdate = (payload: unknown): StyleUpdate | null => {
+  if (typeof payload !== 'string' || payload.length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as StyleUpdate;
+    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'style') {
+      return null;
+    }
+
+    if (
+      typeof parsed.baseFontSize !== 'number' ||
+      !Number.isFinite(parsed.baseFontSize) ||
+      parsed.baseFontSize <= 0
+    ) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    // A malformed payload must never break the overlay.
+    return null;
+  }
+};
+
 /**
  * Applies the names of the NPCs that entered the screen.
  *
@@ -362,7 +380,7 @@ const applyNpcIdsUpdate = (payload: string) => {
       name: npcNames.get(id) ?? current?.name ?? '',
       x: current?.x ?? 0,
       y: current?.y ?? 0,
-      r: current?.r ?? 0,
+      scale: current?.scale ?? 1,
       placed: current?.placed ?? false,
     };
   }
@@ -378,11 +396,13 @@ const applyNpcIdsUpdate = (payload: string) => {
 };
 
 /**
- * Applies the heads of the NPCs that are currently visible on the screen.
+ * Applies the numbers above the heads of the NPCs that are visible on the
+ * screen.
  *
- * A frame is a list of the tuples "index:x,y,r", separated by semicolons. The
- * index is the position of the NPC in the list of the ids, the numbers are the
- * quantized positions of the head.
+ * A frame is a list of the tuples "index:x,y,scale", separated by semicolons.
+ * The index is the position of the NPC in the list of the ids, the numbers are
+ * the plain CSS values of the number: the horizontal offset, the vertical
+ * offset in whole pixels and the scale of the font.
  *
  * Only the markers that really moved are part of a frame, so the markers that
  * did not move keep the position they already have.
@@ -391,6 +411,8 @@ const applyNpcMarkersUpdate = (payload: string) => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return;
   }
+
+  let applied = false;
 
   batch(() => {
     for (const chunk of payload.split(';')) {
@@ -413,20 +435,45 @@ const applyNpcMarkersUpdate = (payload: string) => {
         continue;
       }
 
-      const x = Number(values[0]) / POSITION_SCALE - POSITION_MARGIN;
-      const y = Number(values[1]) / POSITION_SCALE - POSITION_MARGIN;
-      const r = Number(values[2]) / POSITION_SCALE;
+      const x = Number(values[0]);
+      const y = Number(values[1]);
+      const scale = Number(values[2]);
 
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(r)) {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(scale)) {
         continue;
       }
 
       setNpcMarkers(id, 'x', x);
       setNpcMarkers(id, 'y', y);
-      setNpcMarkers(id, 'r', r);
+      setNpcMarkers(id, 'scale', scale);
       setNpcMarkers(id, 'placed', true);
+
+      applied = true;
+    }
+
+    if (applied) {
+      // A frame proves that the plugin knows the size of the viewport, so
+      // the report of the size is not needed anymore.
+      stopViewportReport();
     }
   });
+};
+
+/**
+ * Applies the styles of the overlay.
+ *
+ * The plugin owns the styles of the numbers above the heads, so the base size
+ * of their font is a constant of the plugin. The view only puts it into a
+ * global custom property of the document, where the stylesheet picks it up.
+ */
+const applyStyleUpdate = (payload: string) => {
+  const update = parseStyleUpdate(payload);
+
+  if (!update) {
+    return;
+  }
+
+  document.documentElement.style.setProperty(BASE_FONT_SIZE_PROPERTY, String(update.baseFontSize));
 };
 
 declare global {
@@ -443,10 +490,60 @@ declare global {
     /** Called by the plugin for every update of the visible NPC heads. */
     onNpcMarkersUpdate?: (payload: string) => void;
 
+    /** Called by the plugin for the styles of the overlay. */
+    onStyleUpdate?: (payload: string) => void;
+
+    /** Called by the view to tell the plugin the size of the viewport. */
+    onViewportUpdate?: (payload: string) => void;
+
     /** Called by the view to tell the plugin that it is ready to receive data. */
     onViewReady?: () => void;
   }
 }
+
+/**
+ * The custom property that carries the base size of the font of the numbers.
+ *
+ * The plugin sends the value, so the stylesheet does not have to know it.
+ */
+const BASE_FONT_SIZE_PROPERTY = '--npc-damage-base-font-size';
+
+/**
+ * Reports the size of the viewport to the plugin.
+ *
+ * The plugin sends the positions of the markers in pixels, so it has to know
+ * the size of the viewport. The size is reported when the view starts and
+ * whenever it changes.
+ */
+const sendViewport = () => {
+  const width = Math.round(window.innerWidth);
+  const height = Math.round(window.innerHeight);
+
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  window.onViewportUpdate?.(`${width},${height}`);
+};
+
+/**
+ * The timer that repeats the report of the size of the viewport.
+ *
+ * PrismaUI binds the function of the listener when the page finished
+ * loading, so the first report can be lost. The report is repeated until the
+ * plugin answers with a frame of the positions, which proves that it knows
+ * the size of the viewport.
+ */
+let viewportTimer: number | undefined;
+
+const stopViewportReport = () => {
+  if (viewportTimer === undefined) {
+    return;
+  }
+
+  window.clearInterval(viewportTimer);
+  viewportTimer = undefined;
+};
 
 /**
  * Registers the bridge between the plugin and the view.
@@ -461,10 +558,21 @@ export const initPluginOnWindow = () => {
   window.onNpcIdsUpdate = applyNpcIdsUpdate;
   window.onNpcNamesUpdate = applyNpcNamesUpdate;
   window.onNpcMarkersUpdate = applyNpcMarkersUpdate;
+  window.onStyleUpdate = applyStyleUpdate;
 
   window.setInterval(sweepFeed, FEED_SWEEP_MS);
 
+  // The plugin turns the positions of the markers into pixels, so it has to
+  // know the size of the viewport whenever it changes.
+  window.addEventListener('resize', sendViewport);
+
+  sendViewport();
+  viewportTimer = window.setInterval(sendViewport, VIEWPORT_REPORT_INTERVAL_MS);
+
   const announce = () => {
+    // The size of the viewport is reported first: the plugin cannot place a
+    // marker without it.
+    sendViewport();
     window.onViewReady?.();
   };
 

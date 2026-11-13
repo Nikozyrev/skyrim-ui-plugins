@@ -130,24 +130,34 @@ scene graph of the world is torn down, so the camera and the actors are not
 valid there. The view keeps showing the damage overlay in the main menu and
 only the head markers are switched off.
 
-The result is normalized to the viewport of the game, so the view can place the
-numbers at any resolution:
+The tracker works with the viewport of the game normalized, because it does not
+know the size of the window of the overlay. The bridge turns the result into
+the plain CSS values of the number above the head and rounds them to whole
+pixels:
 
-| Field | Meaning                                                       |
-| ----- | ------------------------------------------------------------- |
-| `x`   | 0 is the left edge of the screen, 1 the right one             |
-| `y`   | 0 is the bottom edge of the screen, 1 the top one              |
-| `r`   | radius of the head as a fraction of the height of the screen   |
+| Field   | Meaning                                                       |
+| ------- | ------------------------------------------------------------- |
+| `x`     | the horizontal offset of the number, in pixels                 |
+| `y`     | the vertical offset of the number, in pixels                   |
+| `scale` | the scale of the font of the number                            |
+
+The number is placed right above the head, so the vertical offset is shifted
+up by the radius of the head, and the size of the font follows that radius: a
+number of an NPC that is far away stays small, but it never becomes
+unreadable. The size is sent as the scale of the base size of the stylesheet,
+so the view only copies these values into the stylesheet and does not compute
+anything on its own.
 
 `Npc::Overlay` drives the tracker as a SKSE game thread task and refreshes the
 markers at most every 16 ms, so at most 60 times per second. The overlay stays
 idle until the view is up.
 
-The positions are quantized to integers before they leave the plugin: they are
-scaled by 10000 and shifted by 0.05 of the screen, so a quantized coordinate is
-never negative. A float32 needs up to 19 characters as text, an integer four,
-and a movement that is smaller than a fraction of a pixel does not change the
-value at all.
+The view reports the size of its viewport to the plugin (`onViewportUpdate`),
+because the positions are sent in pixels and the window of the overlay is not
+the screen of the game. The plugin needs that size before it can send the
+first frame, so nothing is sent before the view reported it. A movement that
+is smaller than a pixel does not change the value at all, so it does not even
+show up in a frame.
 
 ### Damage above the heads
 
@@ -190,7 +200,7 @@ The damage payloads are always a JSON string, so they can never be
 interpreted as code. The frame of the head positions is a plain string of
 numbers, which is even cheaper: it is parsed by hand and never by `JSON.parse`.
 
-Four payload types exist:
+Five payload types exist:
 
 ```jsonc
 // a single new hit
@@ -204,6 +214,9 @@ Four payload types exist:
 
 // the names of the NPCs that entered the screen, keyed by their id
 { "type": "npcNames", "names": { "000ABCDE": "Bandit" } }
+
+// the styles of the overlay
+{ "type": "style", "baseFontSize": 11 }
 ```
 
 An `npcIds` payload replaces the ids of the previous update completely, so an
@@ -217,22 +230,42 @@ An `npcNames` payload only carries the NPCs that the view does not know yet,
 so the names of the NPCs that are already on the screen are never sent twice.
 The names arrive before the ids, so a marker is never drawn without its name.
 
-A frame carries the positions of the heads:
+A `style` payload carries the styles of the overlay. It is sent with the
+handshake and not with every frame: the base size of the font of the numbers
+is a constant of the plugin, so the stylesheet does not have to know it. The
+view sets the value as the global custom property
+`--npc-damage-base-font-size` of the document, where the stylesheet picks it
+up.
+
+A frame carries the numbers above the heads:
 
 ```
-0:10423,20155,120;1:9877,20310,95
+0:1042,215,1.1818;1:987,230,1.0000
 ```
 
-Every tuple is `index:x,y,r`, separated by semicolons. The index is the
-position of the NPC in the list of the ids, the numbers are the quantized
-positions of the head. Only the markers that really moved are part of a frame,
-so a frame is empty - and not sent at all - while nothing moves.
+Every tuple is `index:x,y,scale`, separated by semicolons. The index is the
+position of the NPC in the list of the ids, the numbers are the plain CSS
+values of the number: the horizontal offset, the vertical offset in whole
+pixels and the scale of the font. Only the markers that really moved are part
+of a frame, so a frame is empty - and not sent at all - while nothing moves.
 
 The view registers `window.onViewReady` as well and calls it once its own
 handler is installed. The plugin answers with a snapshot, which closes the race
 between the view being created and the view script being evaluated. The NPC
 channels only start after that handshake, because they need the view to know
 the `onNpcIdsUpdate`, `onNpcNamesUpdate` and `onNpcMarkersUpdate` functions.
+
+The view also reports the size of its viewport to the plugin, because the
+positions are sent in pixels:
+
+```
+window.onViewportUpdate("1920,1080")
+```
+
+The plugin remembers that size and uses it for every conversion. The report is
+repeated until the plugin answers with a frame, because PrismaUI binds the
+function of the listener only when the page finished loading, so the first
+report can be lost.
 
 The view draws the damage number of a marker with a single CSS transform that
 carries both the position and the offset above the head:
@@ -241,8 +274,14 @@ carries both the position and the offset above the head:
 transform: translate(960px, 540px) translate(-50%, -100%);
 ```
 
-The font size of the number follows the size of the head on the screen, so it
-stays readable for NPCs that are far away.
+The size of the font is a scale of the base size, so the plugin sends the
+scale with the offset. The base size itself comes from the plugin as well, so
+it is written down only once:
+
+```css
+font-size: calc(var(--npc-damage-base-font-size) * 1px);
+scale(var(--npc-damage-scale, 1));
+```
 
 ### Failure tolerance
 

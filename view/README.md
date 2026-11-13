@@ -42,21 +42,47 @@ as code. The frame of the head positions is a plain string of numbers.
 | `snapshot`   | `{ type: "snapshot", actors: [...], events: [...] }` - the full state.                      |
 | `npcIds`     | `{ type: "npcIds", ids: [...] }` - the NPCs that are visible on screen.                     |
 | `npcNames`   | `{ type: "npcNames", names: { ... } }` - the names of the NPCs that entered the screen.    |
+| `style`      | `{ type: "style", baseFontSize: 11 }` - the styles of the overlay.                          |
 
 `actors` holds the aggregated damage per character, `events` the recent hits,
 `ids` the visible NPCs and `names` their display names. See `src/plugin/types.ts`
 for the exact shape.
 
-A frame carries the positions of the heads and nothing else:
+A frame carries the numbers above the heads and nothing else:
 
 ```
-0:10423,20155,120;1:9877,20310,95
+0:1042,215,1.1818;1:987,230,1.0000
 ```
 
-Every tuple is `index:x,y,r`, separated by semicolons. The index is the
-position of the NPC in the list of the ids, the numbers are the quantized
-positions of the head: they are scaled by 10000 and shifted by 0.05 of the
-screen. Only the markers that really moved are part of a frame.
+Every tuple is `index:x,y,scale`, separated by semicolons. The index is the
+position of the NPC in the list of the ids, the numbers are the plain CSS
+values of the number: the horizontal offset, the vertical offset in whole
+pixels and the scale of the font. The plugin computes them, so the view only
+copies them into the stylesheet. Only the markers that really moved are part
+of a frame.
+
+The plugin sends the positions in pixels, so the view reports the size of its
+viewport to the plugin:
+
+```
+window.onViewportUpdate("1920,1080")
+```
+
+The report is sent when the view starts, whenever the viewport changes and
+repeatedly until the plugin answers with a frame: PrismaUI binds the function
+of the listener only when the page finished loading, so the first report can
+be lost.
+
+The plugin owns the styles of the numbers as well. It sends the base size of
+their font with the handshake and the view puts it into the global custom
+property `--npc-damage-base-font-size` of the document:
+
+```ts
+document.documentElement.style.setProperty('--npc-damage-base-font-size', '11');
+```
+
+The stylesheet picks the value up, so the base size is written down only once,
+in the plugin.
 
 ### Damage numbers above the heads
 
@@ -71,9 +97,9 @@ and only the number above that head is drawn again.
 
 The ids of the visible NPCs only change when an NPC enters or leaves the
 screen, so the list of the markers is stable while the NPCs only move around.
-The markers themselves arrive with every frame and only carry the position of
-the head, so the elements are reused between the frames and only their position
-and their number are updated.
+The markers themselves arrive with every frame and only carry the values of
+the number above the head, so the elements are reused between the frames and
+only their position and their number are updated.
 
 The markers live in a Solid store, so a frame only writes the markers that
 really moved and only those elements are drawn again. The names of the NPCs

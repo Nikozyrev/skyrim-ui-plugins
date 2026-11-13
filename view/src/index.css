@@ -56,10 +56,13 @@ body {
  * head of the NPC and shifts it up, so its lower edge touches the anchor.
  *
  * The offsets and the scale are set as custom properties by the component.
- * The offsets are plain numbers, so the pixels are added here.
+ * The plugin computes them, the view only copies them into the stylesheet. The
+ * offsets are plain numbers, so the pixels are added here.
  *
  * The text keeps the base font size and is scaled around the anchor, so a
- * bigger number grows upwards without moving the anchor.
+ * bigger number grows upwards without moving the anchor. The base font size
+ * comes from the plugin as the global custom property
+ * `--npc-damage-base-font-size`, so it is written down only once.
  */
 .npc-damage {
   position: absolute;
@@ -71,7 +74,7 @@ body {
       calc(var(--npc-damage-y, 0) * 1px)
     )
     scale(var(--npc-damage-scale, 1));
-  font-size: 11px;
+  font-size: calc(var(--npc-damage-base-font-size) * 1px);
   will-change: transform;
   font-weight: 700;
   line-height: 1;
@@ -79,6 +82,10 @@ body {
   /* text-shadow:
     0 1px 2px rgb(0 0 0 / 0.9),
     0 0 4px rgb(0 0 0 / 0.6); */
+}
+
+.hidden {
+  display: none;
 }
 
 /*

@@ -67,7 +67,7 @@ export type DamageUpdate = {
   events?: DamageEvent[] | null;
 };
 
-/** The head of a single NPC that is visible on the screen. */
+/** The number above the head of a single NPC that is visible on the screen. */
 export type NpcMarker = {
   /** Form ID of the NPC. */
   id: string;
@@ -75,14 +75,14 @@ export type NpcMarker = {
   /** Display name of the NPC. */
   name: string;
 
-  /** Horizontal position, 0 is the left edge of the screen and 1 the right one. */
+  /** The horizontal offset of the number, in pixels. */
   x: number;
 
-  /** Vertical position, 0 is the bottom edge of the screen and 1 the top one. */
+  /** The vertical offset of the number, in pixels. */
   y: number;
 
-  /** Radius of the head circle as a fraction of the height of the screen. */
-  r: number;
+  /** The scale of the font of the number. */
+  scale: number;
 
   /**
    * True once the position of the marker was received.
@@ -125,4 +125,19 @@ export type NpcNamesUpdate = {
 
   /** The display names of the NPCs, keyed by their form id. */
   names: Record<string, string>;
+};
+
+/**
+ * The styles of the overlay.
+ *
+ * The plugin owns the styles of the numbers above the heads, so the view does
+ * not have to know the base size of their font: the plugin sends it and the
+ * view sets it as a global custom property of the document.
+ */
+export type StyleUpdate = {
+  /** "style" carries the styles of the overlay. */
+  type: 'style';
+
+  /** The base size of the font of the numbers, in pixels. */
+  baseFontSize: number;
 };
