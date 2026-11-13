@@ -1,5 +1,5 @@
 import { Index, createMemo, type Accessor } from 'solid-js';
-import { damageByTarget, npcMarkerIds, npcMarkers } from '../plugin/plugin';
+import { damageByTarget, npcMarkerIds, npcMarkers, npcNames } from '../plugin/plugin';
 import { DAMAGE_KIND_TEXT } from '../plugin/damage-colors';
 import type { TargetDamage } from '../plugin/types';
 import { createCssPropDirective } from '../utils/css-prop-directive';
@@ -100,6 +100,17 @@ const NpcDamageSlot = (props: { index: number }) => {
   const scale = createMemo(() => npcMarker()?.scale ?? 1);
 
   /**
+   * The name of the NPC of the slot, looked up by its id.
+   *
+   * The names live in a store of their own, so they are not part of the
+   * markers and the title follows the NPC that occupies the slot.
+   */
+  const name = createMemo(() => {
+    const current = id();
+    return current === undefined ? undefined : npcNames[current];
+  });
+
+  /**
    * The slot is only drawn when it holds an NPC whose position is known.
    */
   const empty = createMemo(() => id() === undefined || !npcMarker()?.placed);
@@ -110,7 +121,7 @@ const NpcDamageSlot = (props: { index: number }) => {
       use:cssNpcDamageX={offsetX}
       use:cssNpcDamageY={offsetY}
       use:cssNpcDamageScale={scale}
-      title={npcMarker()?.name}
+      title={name()}
     >
       <Damage id={id} />
     </div>

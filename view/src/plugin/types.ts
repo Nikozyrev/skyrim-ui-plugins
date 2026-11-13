@@ -72,9 +72,6 @@ export type NpcMarker = {
   /** Form ID of the NPC. */
   id: string;
 
-  /** Display name of the NPC. */
-  name: string;
-
   /** The horizontal offset of the number, in pixels. */
   x: number;
 

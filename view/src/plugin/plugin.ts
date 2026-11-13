@@ -71,9 +71,10 @@ let npcOrder: string[] = [];
  * The names of the NPCs that are visible on the screen, keyed by their id.
  *
  * The plugin sends the names of the NPCs that entered the screen in their own
- * message, so they are kept next to the markers and not inside the store.
+ * message, so they are kept in a store of their own: the name of an NPC is
+ * looked up by its id and never travels with the markers.
  */
-const npcNames = new Map<string, string>();
+const [npcNames, setNpcNames] = createStore<Record<string, string>>({});
 
 /**
  * The damage every target received, keyed by the form id of the target.
@@ -95,7 +96,7 @@ const [damageByTarget, setDamageByTarget] = createStore<Record<string, TargetDam
  */
 let damageOrder: string[] = [];
 
-export { feed, actors, connected, npcMarkerIds, npcMarkers, damageByTarget };
+export { feed, actors, connected, npcMarkerIds, npcMarkers, npcNames, damageByTarget };
 
 const parseUpdate = (payload: unknown): DamageUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -318,7 +319,7 @@ const parseStyleUpdate = (payload: unknown): StyleUpdate | null => {
  *
  * The plugin sends the names in their own message and only for the NPCs that
  * the view does not know yet, so the names of the visible NPCs are kept in a
- * map of their own.
+ * store of their own, keyed by the id of their NPC.
  */
 const applyNpcNamesUpdate = (payload: string) => {
   const update = parseNpcNamesUpdate(payload);
@@ -336,13 +337,9 @@ const applyNpcNamesUpdate = (payload: string) => {
         continue;
       }
 
-      npcNames.set(id, name);
-
-      // The marker of the NPC may already exist, then its name is updated
-      // right away. Otherwise the name is picked up when the ids arrive.
-      if (npcMarkers[id]) {
-        setNpcMarkers(id, 'name', name);
-      }
+      // The name is only written for its own NPC, so the markers of the other
+      // ones are not drawn again.
+      setNpcNames(id, name);
     }
   });
 };
@@ -354,6 +351,9 @@ const applyNpcNamesUpdate = (payload: string) => {
  * the list is replaced with the complete set of the visible NPCs. The order
  * of the list matters: the frames of the positions address their markers by
  * the index of the NPC in it.
+ *
+ * The markers and the names of the NPCs that left the screen are kept: they
+ * are only dropped when the last NPC left the screen.
  */
 const applyNpcIdsUpdate = (payload: string) => {
   const update = parseNpcIdsUpdate(payload);
@@ -365,34 +365,38 @@ const applyNpcIdsUpdate = (payload: string) => {
     ? update.ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
     : [];
 
+  const previous = new Set(npcOrder);
+
   npcOrder = ids;
   setNpcMarkerIds(ids);
 
-  // The markers that stay keep their position, the new ones start without a
-  // position and the ones that left the screen are dropped.
-  const next: Record<string, NpcMarker> = {};
-
-  for (const id of ids) {
-    const current = npcMarkers[id];
-
-    next[id] = {
-      id,
-      name: npcNames.get(id) ?? current?.name ?? '',
-      x: current?.x ?? 0,
-      y: current?.y ?? 0,
-      scale: current?.scale ?? 1,
-      placed: current?.placed ?? false,
-    };
+  // Every NPC left the screen, so the markers and the names of the NPCs that
+  // were visible are dropped.
+  if (ids.length === 0) {
+    setNpcMarkers(reconcile({}));
+    setNpcNames(reconcile({}));
+    return;
   }
 
-  setNpcMarkers(reconcile(next));
+  // The markers of the NPCs that left the screen are kept: only the NPCs that
+  // are on the screen are touched. A NPC that entered the screen, or that comes
+  // back to it, starts without a position until the frame with its new
+  // position arrives.
+  batch(() => {
+    for (const id of ids) {
+      const current = npcMarkers[id];
 
-  // The names of the NPCs that left the screen are dropped as well.
-  for (const id of Array.from(npcNames.keys())) {
-    if (!next[id]) {
-      npcNames.delete(id);
+      if (!current || !previous.has(id)) {
+        setNpcMarkers(id, {
+          id,
+          x: 0,
+          y: 0,
+          scale: 1,
+          placed: false,
+        });
+      }
     }
-  }
+  });
 };
 
 /**
