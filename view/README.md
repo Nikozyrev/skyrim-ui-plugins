@@ -61,6 +61,20 @@ pixels and the scale of the font. The scale is written with two decimals. The
 plugin computes them, so the view only copies them into the stylesheet. Only
 the markers that really moved are part of a frame.
 
+The view writes every value of a marker into a global custom property of the
+document that is named after the id of its NPC:
+
+```ts
+document.documentElement.style.setProperty('--npc-0001ABCD-x', '1042');
+```
+
+The slot of the overlay only points at those properties, so the stylesheet
+resolves the values of the NPC that occupies the slot:
+
+```ts
+style="--npc-damage-x: var(--npc-0001ABCD-x, 0)"
+```
+
 The plugin sends the positions in pixels, so the view reports the size of its
 viewport to the plugin:
 
@@ -101,7 +115,11 @@ The markers themselves arrive with every frame and only carry the values of
 the number above the head, so the elements are reused between the frames and
 only their position and their number are updated.
 
-The markers live in a Solid store, so a frame only writes the markers that
-really moved and only those elements are drawn again. The names of the NPCs
-arrive in their own message and are kept in a map of their own, so they never
-travel with the positions.
+The positions do not live in a Solid store: every value of a marker is written
+into a global custom property of the document that is named after the id of its
+NPC (`--npc-0001ABCD-x`). The slot of the overlay only points at those
+properties, so the stylesheet resolves the value of the NPC that occupies the
+slot. A frame therefore only writes the properties of the markers that really
+moved, and the elements of the other NPCs are not touched at all. The names of
+the NPCs arrive in their own message and are kept in a map of their own, so
+they never travel with the positions.

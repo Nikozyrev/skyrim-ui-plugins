@@ -174,10 +174,14 @@ written point by point, a hit only redraws the number above that one head.
 
 The markers arrive at up to 60 times per second, so the view renders them with a
 keyed list: the ids are the key of the list, the elements are reused between the
-frames and only their position is updated. The markers live in a Solid store
-instead of a signal, so a frame only touches the markers that really moved and
-only those are drawn again. The number itself is recreated with every hit,
-which restarts the animation that makes it pop up.
+frames and only their position is updated. The positions do not live in a store:
+every value of a marker is written into a global custom property of the document
+that is named after the id of its NPC (`--npc-0001ABCD-x`). The slot of the
+overlay only points at those properties, so the stylesheet resolves the value of
+the NPC that occupies the slot. A frame therefore only writes the properties of
+the markers that really moved, and the elements of the other NPCs are not
+touched at all. The number itself is recreated with every hit, which restarts
+the animation that makes it pop up.
 
 The ids of the visible NPCs travel on their own channel and only when the set
 of the visible NPCs changed, so the list of the view stays stable while the

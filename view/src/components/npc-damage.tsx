@@ -1,28 +1,10 @@
 import { Index, createMemo, type Accessor } from 'solid-js';
-import { damageByTarget, npcMarkerIds, npcMarkers, npcNames } from '../plugin/plugin';
+import { damageByTarget, npcMarkerIds, npcNames } from '../plugin/plugin';
 import { DAMAGE_KIND_TEXT } from '../plugin/damage-colors';
+import { markerProperty, type MarkerValue } from '../plugin/marker-properties';
 import type { TargetDamage } from '../plugin/types';
-import { createCssPropDirective } from '../utils/css-prop-directive';
 
 const formatAmount = (value: number) => Math.round(value).toString();
-
-const cssNpcDamageX = createCssPropDirective('--npc-damage-x');
-const cssNpcDamageY = createCssPropDirective('--npc-damage-y');
-const cssNpcDamageScale = createCssPropDirective('--npc-damage-scale');
-
-void [cssNpcDamageX, cssNpcDamageY, cssNpcDamageScale];
-
-export type CssVarDirectiveValue = Accessor<string | number>;
-
-declare module 'solid-js' {
-  namespace JSX {
-    interface Directives {
-      cssNpcDamageX: CssVarDirectiveValue;
-      cssNpcDamageY: CssVarDirectiveValue;
-      cssNpcDamageScale: CssVarDirectiveValue;
-    }
-  }
-}
 
 /**
  * The number of the slots of the overlay.
@@ -40,6 +22,10 @@ const SLOT_COUNT = 30;
  * stay the same for the whole lifetime of the overlay.
  */
 const SLOT_INDEXES = Array.from({ length: SLOT_COUNT });
+
+const markerValue = (id: string | undefined, value: MarkerValue, fallback: string) => {
+  return id === undefined ? fallback : `var(${markerProperty(id, value)}, ${fallback})`;
+};
 
 /**
  * The damage that is drawn above the head of the NPC of a slot.
@@ -79,7 +65,7 @@ const Damage = (props: { id: Accessor<string | undefined> }) => {
  *
  * The id of the NPC is the one that sits at the index of the slot in the list
  * of the visible NPCs. An empty slot has no id at all and is hidden.
- */
+*/
 const NpcDamageSlot = (props: { index: number }) => {
   /**
    * The id of the NPC that occupies the slot, or undefined when the slot is
@@ -88,16 +74,20 @@ const NpcDamageSlot = (props: { index: number }) => {
   const id = createMemo(() => npcMarkerIds()[props.index]);
 
   /**
-   * The marker of the NPC of the slot, or undefined when the slot is empty.
+   * One value of the NPC, as it is written into the custom property of the
+   * slot.
+   *
+   * The values of a NPC live in the global custom properties of the document,
+   * so the slot only points at them: the property of the slot follows the NPC
+   * that occupies it. A slot without an NPC keeps the fallback, so it is
+   * drawn nowhere.
    */
-  const npcMarker = createMemo(() => {
-    const current = id();
-    return current === undefined ? undefined : npcMarkers[current];
-  });
-
-  const offsetX = createMemo(() => npcMarker()?.x ?? 0);
-  const offsetY = createMemo(() => npcMarker()?.y ?? 0);
-  const scale = createMemo(() => npcMarker()?.scale ?? 1);
+  const style = createMemo(() => ({
+    '--npc-damage-x': markerValue(id(), 'x', '0'),
+    '--npc-damage-y': markerValue(id(), 'y', '0'),
+    '--npc-damage-scale': markerValue(id(), 'scale', '1'),
+    '--npc-damage-placed': markerValue(id(), 'placed', '0'),
+  }));
 
   /**
    * The name of the NPC of the slot, looked up by its id.
@@ -110,17 +100,10 @@ const NpcDamageSlot = (props: { index: number }) => {
     return current === undefined ? undefined : npcNames[current];
   });
 
-  /**
-   * The slot is only drawn when it holds an NPC whose position is known.
-   */
-  const empty = createMemo(() => id() === undefined || !npcMarker()?.placed);
-
   return (
     <div
-      class={`npc-damage ${empty() ? 'hidden' : ''}`}
-      use:cssNpcDamageX={offsetX}
-      use:cssNpcDamageY={offsetY}
-      use:cssNpcDamageScale={scale}
+      class="npc-damage"
+      style={style()}
       title={name()}
     >
       <Damage id={id} />

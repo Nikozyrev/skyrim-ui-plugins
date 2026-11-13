@@ -59,6 +59,11 @@ body {
  * The plugin computes them, the view only copies them into the stylesheet. The
  * offsets are plain numbers, so the pixels are added here.
  *
+ * The component only points at the values of its NPC: they live in the global
+ * custom properties of the document, which are named after the id of the NPC.
+ * The slot is only drawn once the plugin sent the position of its NPC, so the
+ * opacity follows that state.
+ *
  * The text keeps the base font size and is scaled around the anchor, so a
  * bigger number grows upwards without moving the anchor. The base font size
  * comes from the plugin as the global custom property
@@ -75,6 +80,7 @@ body {
     )
     scale(var(--npc-damage-scale, 1));
   font-size: calc(var(--npc-damage-base-font-size) * 1px);
+  opacity: var(--npc-damage-placed, 0);
   will-change: transform;
   font-weight: 700;
   line-height: 1;

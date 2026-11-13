@@ -1,12 +1,12 @@
 import { batch, createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import { dominantKind, resolveKind } from './damage-colors';
+import { markerProperty } from './marker-properties';
 import type {
   ActorStats,
   DamageEvent,
   DamageUpdate,
   NpcIdsUpdate,
-  NpcMarker,
   NpcNamesUpdate,
   StyleUpdate,
   TargetDamage,
@@ -51,19 +51,10 @@ const [connected, setConnected] = createSignal(false);
 const [npcMarkerIds, setNpcMarkerIds] = createSignal<string[]>([]);
 
 /**
- * The markers of the visible NPCs, keyed by the form id of the NPC.
- *
- * The markers arrive with every frame, they only carry the position of the
- * head of the NPC. They live in a store instead of a signal, so a frame only
- * touches the markers that really moved and only those are drawn again.
- */
-const [npcMarkers, setNpcMarkers] = createStore<Record<string, NpcMarker>>({});
-
-/**
  * The ids of the visible NPCs in the order of the frames.
  *
  * The frames address their markers by the index of the NPC in this list, so
- * the list is kept next to the store and not inside it.
+ * the list is kept next to the properties of the markers.
  */
 let npcOrder: string[] = [];
 
@@ -96,7 +87,42 @@ const [damageByTarget, setDamageByTarget] = createStore<Record<string, TargetDam
  */
 let damageOrder: string[] = [];
 
-export { feed, actors, connected, npcMarkerIds, npcMarkers, npcNames, damageByTarget };
+export { feed, actors, connected, npcMarkerIds, npcNames, damageByTarget };
+
+/**
+ * Writes the values of a NPC into the global custom properties of the
+ * document.
+ *
+ * The properties are addressed by the id of the NPC, so a slot of the overlay
+ * can point at them with the id of the NPC it shows. The stylesheet resolves
+ * the reference on its own, so a frame does not have to touch the elements of
+ * the NPCs that did not move.
+ */
+const setMarkerValues = (a_id: string, a_x: number, a_y: number, a_scale: number) => {
+  const style = document.documentElement.style;
+
+  style.setProperty(markerProperty(a_id, 'x'), String(a_x));
+  style.setProperty(markerProperty(a_id, 'y'), String(a_y));
+  style.setProperty(markerProperty(a_id, 'scale'), String(a_scale));
+
+  // The marker is only drawn once its position is known.
+  style.setProperty(markerProperty(a_id, 'placed'), '1');
+};
+
+/**
+ * Drops the values of a NPC.
+ *
+ * The properties are removed instead of being reset, so a NPC that comes back
+ * to the screen starts without a position again.
+ */
+const clearMarkerValues = (a_id: string) => {
+  const style = document.documentElement.style;
+
+  style.removeProperty(markerProperty(a_id, 'x'));
+  style.removeProperty(markerProperty(a_id, 'y'));
+  style.removeProperty(markerProperty(a_id, 'scale'));
+  style.removeProperty(markerProperty(a_id, 'placed'));
+};
 
 const parseUpdate = (payload: unknown): DamageUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -352,8 +378,8 @@ const applyNpcNamesUpdate = (payload: string) => {
  * of the list matters: the frames of the positions address their markers by
  * the index of the NPC in it.
  *
- * The markers and the names of the NPCs that left the screen are kept: they
- * are only dropped when the last NPC left the screen.
+ * The names of the NPCs that left the screen are kept: they are only dropped
+ * when the last NPC left the screen.
  */
 const applyNpcIdsUpdate = (payload: string) => {
   const update = parseNpcIdsUpdate(payload);
@@ -366,37 +392,24 @@ const applyNpcIdsUpdate = (payload: string) => {
     : [];
 
   const previous = new Set(npcOrder);
+  const current = new Set(ids);
 
   npcOrder = ids;
   setNpcMarkerIds(ids);
 
-  // Every NPC left the screen, so the markers and the names of the NPCs that
-  // were visible are dropped.
-  if (ids.length === 0) {
-    setNpcMarkers(reconcile({}));
-    setNpcNames(reconcile({}));
-    return;
+  // The values of the NPCs that left the screen are dropped, so a NPC that
+  // comes back to the screen starts without a position again.
+  for (const id of previous) {
+    if (!current.has(id)) {
+      clearMarkerValues(id);
+    }
   }
 
-  // The markers of the NPCs that left the screen are kept: only the NPCs that
-  // are on the screen are touched. A NPC that entered the screen, or that comes
-  // back to it, starts without a position until the frame with its new
-  // position arrives.
-  batch(() => {
-    for (const id of ids) {
-      const current = npcMarkers[id];
-
-      if (!current || !previous.has(id)) {
-        setNpcMarkers(id, {
-          id,
-          x: 0,
-          y: 0,
-          scale: 1,
-          placed: false,
-        });
-      }
-    }
-  });
+  // Every NPC left the screen, so the names of the NPCs that were visible are
+  // dropped as well.
+  if (ids.length === 0) {
+    setNpcNames(reconcile({}));
+  }
 };
 
 /**
@@ -408,8 +421,8 @@ const applyNpcIdsUpdate = (payload: string) => {
  * the plain CSS values of the number: the horizontal offset, the vertical
  * offset in whole pixels and the scale of the font.
  *
- * Only the markers that really moved are part of a frame, so the markers that
- * did not move keep the position they already have.
+ * The values are written into the global custom properties of the NPC, so
+ * only the markers that really moved change and only those are drawn again.
  */
 const applyNpcMarkersUpdate = (payload: string) => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -418,49 +431,44 @@ const applyNpcMarkersUpdate = (payload: string) => {
 
   let applied = false;
 
-  batch(() => {
-    for (const chunk of payload.split(';')) {
-      if (!chunk) {
-        continue;
-      }
-
-      const separator = chunk.indexOf(':');
-      if (separator <= 0) {
-        continue;
-      }
-
-      const id = npcOrder[Number(chunk.slice(0, separator))];
-      if (!id || !npcMarkers[id]) {
-        continue;
-      }
-
-      const values = chunk.slice(separator + 1).split(',');
-      if (values.length < 3) {
-        continue;
-      }
-
-      const x = Number(values[0]);
-      const y = Number(values[1]);
-      const scale = Number(values[2]);
-
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(scale)) {
-        continue;
-      }
-
-      setNpcMarkers(id, 'x', x);
-      setNpcMarkers(id, 'y', y);
-      setNpcMarkers(id, 'scale', scale);
-      setNpcMarkers(id, 'placed', true);
-
-      applied = true;
+  for (const chunk of payload.split(';')) {
+    if (!chunk) {
+      continue;
     }
 
-    if (applied) {
-      // A frame proves that the plugin knows the size of the viewport, so
-      // the report of the size is not needed anymore.
-      stopViewportReport();
+    const separator = chunk.indexOf(':');
+    if (separator <= 0) {
+      continue;
     }
-  });
+
+    const id = npcOrder[Number(chunk.slice(0, separator))];
+    if (!id) {
+      continue;
+    }
+
+    const values = chunk.slice(separator + 1).split(',');
+    if (values.length < 3) {
+      continue;
+    }
+
+    const x = Number(values[0]);
+    const y = Number(values[1]);
+    const scale = Number(values[2]);
+
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(scale)) {
+      continue;
+    }
+
+    setMarkerValues(id, x, y, scale);
+
+    applied = true;
+  }
+
+  if (applied) {
+    // A frame proves that the plugin knows the size of the viewport, so
+    // the report of the size is not needed anymore.
+    stopViewportReport();
+  }
 };
 
 /**

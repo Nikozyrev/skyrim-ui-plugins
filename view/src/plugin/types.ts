@@ -67,29 +67,6 @@ export type DamageUpdate = {
   events?: DamageEvent[] | null;
 };
 
-/** The number above the head of a single NPC that is visible on the screen. */
-export type NpcMarker = {
-  /** Form ID of the NPC. */
-  id: string;
-
-  /** The horizontal offset of the number, in pixels. */
-  x: number;
-
-  /** The vertical offset of the number, in pixels. */
-  y: number;
-
-  /** The scale of the font of the number. */
-  scale: number;
-
-  /**
-   * True once the position of the marker was received.
-   *
-   * The plugin announces the ids of the visible NPCs before it sends their
-   * positions, so a marker exists a moment before it can be drawn.
-   */
-  placed: boolean;
-};
-
 /**
  * The ids of the NPCs that are visible on the screen.
  *
