@@ -1,6 +1,7 @@
-import { For, createMemo, type Accessor } from 'solid-js';
+import { Index, createMemo, type Accessor } from 'solid-js';
 import { damageByTarget, npcMarkerIds, npcMarkers } from '../plugin/plugin';
 import { DAMAGE_KIND_TEXT } from '../plugin/damage-colors';
+import type { TargetDamage } from '../plugin/types';
 import { createCssPropDirective } from '../utils/css-prop-directive';
 
 const formatAmount = (value: number) => Math.round(value).toString();
@@ -23,44 +24,95 @@ declare module 'solid-js' {
   }
 }
 
-const Damage = (props: { id: string }) => {
-  const damage = createMemo(() => damageByTarget[props.id]);
+/**
+ * The number of the slots of the overlay.
+ *
+ * The slots are drawn once and are never re-created: the ids of the visible
+ * NPCs only fill them. A NPC that enters or leaves the screen therefore never
+ * touches the elements of the other ones.
+ */
+const SLOT_COUNT = 30;
 
-  const color = createMemo(( ) => damage() ? DAMAGE_KIND_TEXT[damage().kind] : '')
+/**
+ * The indexes of the slots.
+ *
+ * The list never changes, so the components of the slots are created once and
+ * stay the same for the whole lifetime of the overlay.
+ */
+const SLOT_INDEXES = Array.from({ length: SLOT_COUNT });
+
+/**
+ * The damage that is drawn above the head of the NPC of a slot.
+ *
+ * The id of the NPC is looked up through an accessor, so the value follows
+ * the NPC that occupies the slot, even when it changes.
+ */
+const Damage = (props: { id: Accessor<string | undefined> }) => {
+  const damage = createMemo<TargetDamage | undefined>(() => {
+    const id = props.id();
+    return id === undefined ? undefined : damageByTarget[id];
+  });
+
+  const color = createMemo(() => {
+    const entry = damage();
+    return entry ? DAMAGE_KIND_TEXT[entry.kind] : '';
+  });
+
+  const text = createMemo(() => {
+    const entry = damage();
+    return entry ? formatAmount(entry.amount) : null;
+  });
 
   return (
     <span class={`npc-damage-value ${color()} ${damage() ? '' : 'hidden'}`}>
-      {damage() ? formatAmount(damage().amount) : null}
+      {text()}
     </span>
   );
 };
 
 /**
- * The damage a single NPC received.
+ * The number above the head of a single NPC.
  *
- * The amount is looked up by the id of the marker, which is the same id the
- * plugin sends as the target of a damage event.
- *
- * The plugin sends the plain values of the number: the two offsets and the
- * size of the font, all of them in pixels. The view only copies them into the
+ * The slot owns the position of the number: the plugin sends the offsets and
+ * the size of the font in plain pixels and the view only copies them into the
  * stylesheet, it does not compute anything on its own.
+ *
+ * The id of the NPC is the one that sits at the index of the slot in the list
+ * of the visible NPCs. An empty slot has no id at all and is hidden.
  */
-const NpcDamage = (props: { id: string }) => {
-  const npcMarker = createMemo(() => npcMarkers[props.id]);
+const NpcDamageSlot = (props: { index: number }) => {
+  /**
+   * The id of the NPC that occupies the slot, or undefined when the slot is
+   * empty.
+   */
+  const id = createMemo(() => npcMarkerIds()[props.index]);
+
+  /**
+   * The marker of the NPC of the slot, or undefined when the slot is empty.
+   */
+  const npcMarker = createMemo(() => {
+    const current = id();
+    return current === undefined ? undefined : npcMarkers[current];
+  });
 
   const offsetX = createMemo(() => npcMarker()?.x ?? 0);
   const offsetY = createMemo(() => npcMarker()?.y ?? 0);
   const scale = createMemo(() => npcMarker()?.scale ?? 1);
 
+  /**
+   * The slot is only drawn when it holds an NPC whose position is known.
+   */
+  const empty = createMemo(() => id() === undefined || !npcMarker()?.placed);
+
   return (
     <div
-      class={`npc-damage ${npcMarker()?.placed ? '' : 'hidden'}`}
+      class={`npc-damage ${empty() ? 'hidden' : ''}`}
       use:cssNpcDamageX={offsetX}
       use:cssNpcDamageY={offsetY}
       use:cssNpcDamageScale={scale}
       title={npcMarker()?.name}
     >
-      <Damage id={props.id} />
+      <Damage id={id} />
     </div>
   );
 };
@@ -68,10 +120,10 @@ const NpcDamage = (props: { id: string }) => {
 /**
  * Draws the damage the visible NPCs received above their heads.
  */
-export function NpcDamageOverlay() {
-  return (
-    <div class="npc-layer">
-      <For each={npcMarkerIds()}>{(id) => <NpcDamage id={id} />}</For>
-    </div>
-  );
-}
+export const NpcDamageOverlay = () => (
+  <div class="npc-layer">
+    <Index each={SLOT_INDEXES}>
+      {(_, index) => <NpcDamageSlot index={index} />}
+    </Index>
+  </div>
+);
