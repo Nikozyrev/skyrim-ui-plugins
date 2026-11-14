@@ -585,7 +585,6 @@ namespace UI
 		}
 
 		if (!names.empty()) {
-			logger::info("Sending names: {}", names.dump());
 			if (!Send(kNpcNamesFunction, names.dump())) {
 				// The view does not know the names, so they are sent again
 				// with the next frame.
@@ -598,7 +597,6 @@ namespace UI
 		}
 		
 		std::string showFrame = BuildShowFrame(a_entries);
-		logger::info("Sending show slots: {}", showFrame);
 		return Send(kNpcSlotsShowFunction, showFrame);
 	}
 
