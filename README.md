@@ -105,6 +105,8 @@ that NPC received right above its head.
 ```
 Skyrim ──► RE::ProcessLists::ForAllActors ──► Npc::Tracker
                                                       │
+                                                  Npc::SlotPool
+                                                      │
                                               UI::Bridge ◄──┘
                                                       │
                                                   PrismaUI view
@@ -173,38 +175,51 @@ starts from a correct state after a save was loaded. Because the store is
 written point by point, a hit only redraws the number above that one head.
 
 The markers arrive at up to 60 times per second, so the view renders them with a
-keyed list: the ids are the key of the list, the elements are reused between the
-frames and only their position is updated. The positions do not live in a store:
-every value of a marker is written into a global custom property of the document
-that is named after the id of its NPC (`--npc-0001ABCD-x`). The slot of the
-overlay only points at those properties, so the stylesheet resolves the value of
-the NPC that occupies the slot. A frame therefore only writes the properties of
-the markers that really moved, and the elements of the other NPCs are not
-touched at all. The number itself is recreated with every hit, which restarts
-the animation that makes it pop up.
+keyed list: the elements of the slots are created once and are never
+re-created. The positions do not live in a store: every value of a marker is
+written into a global custom property of the document that is named after the
+number of its slot (`--npc-slot-3-x`). The element of the slot only points at
+those properties, so the stylesheet resolves the value of the NPC that occupies
+the slot. A frame therefore only writes the properties of the slots that really
+moved, and the elements of the other slots are not touched at all. The number
+itself is recreated with every hit, which restarts the animation that makes it
+pop up.
 
-The ids of the visible NPCs travel on their own channel and only when the set
-of the visible NPCs changed, so the list of the view stays stable while the
-NPCs only move around. Their names travel on a third channel and only for the
-NPCs that entered the screen: a name never changes, so it is read from the
-engine once per NPC and sent once per NPC as well.
+### Slots
+
+The slots of the overlay belong to the plugin. `Npc::SlotPool` owns them: it
+keeps a stack of the free slots, a bit mask (`std::bitset`) of the slots that
+are in use and a table of the NPCs that are on the screen, keyed by their form
+id. Every frame the pool marks the NPCs that are still visible, frees the
+slots of the NPCs that left the screen and hands a free slot to every NPC that
+entered the screen. An NPC that does not get a slot is not shown at all.
+
+Because the slots belong to the plugin, the view does not have to know how many
+NPCs are on the screen: it draws one element per slot and follows the numbers
+that the plugin sends. The id of an NPC travels with the number of its slot
+and only when it enters the screen, so the view keeps it in a store that is
+keyed by the number of the slot. The name of an NPC travels on a channel of
+its own and is kept in a store of its own, keyed by the form id of the NPC.
 
 ### Plugin ↔ view bridge
 
-The plugin talks to the view through four global JavaScript functions:
+The plugin talks to the view through five global JavaScript functions:
 
 ```js
 window.onDamageUpdate(JSON.stringify(payload));
-window.onNpcIdsUpdate(JSON.stringify(payload));
-window.onNpcNamesUpdate(JSON.stringify(payload));
-window.onNpcMarkersUpdate(frame);
+window.onNpcSlotsHide(frame);
+window.onNpcSlotsShow(frame);
+window.onNpcSlotsMove(frame);
+window.onNpcNames(JSON.stringify(names));
+window.onStyleUpdate(JSON.stringify(payload));
 ```
 
 The damage payloads are always a JSON string, so they can never be
-interpreted as code. The frame of the head positions is a plain string of
-numbers, which is even cheaper: it is parsed by hand and never by `JSON.parse`.
+interpreted as code. The frames of the head overlay are plain strings of
+numbers, which are even cheaper: they are parsed by hand and never by
+`JSON.parse`.
 
-Five payload types exist, and the ids and the names have their own channels, so they are sent without a type of their own:
+Six payload types exist:
 
 ```jsonc
 // a single new hit
@@ -213,53 +228,69 @@ Five payload types exist, and the ids and the names have their own channels, so 
 // the complete state
 { "type": "snapshot", "actors": [ /* ... */ ], "events": [ /* ... */ ] }
 
-// the ids of the NPCs that are visible on the screen
-[ "000ABCDE", "0000BEEF" ]
-
-// the names of the NPCs that entered the screen, keyed by their id
+// the names of the NPCs, keyed by their form id
 { "000ABCDE": "Bandit" }
 
 // the styles of the overlay
-{ "type": "style", "baseFontSize": 11 }
+{ "type": "style", "baseFontSize": 11, "slotCount": 50 }
 ```
 
-An `npcIds` payload replaces the ids of the previous update completely, so an
-NPC that left the screen disappears without a separate "remove" message. It is
-only sent when the set of the visible NPCs changed: the bridge keeps the ids
-it sent the last time and compares them with the current ones. The order of
-the list is part of the protocol, because a frame addresses its markers by the
-index of the NPC in it.
+An `npcSlotsHide` payload is a plain list of the numbers of the slots that
+have to be freed, separated by semicolons:
 
-An `npcNames` payload only carries the NPCs that the view does not know yet,
-so the names of the NPCs that are already on the screen are never sent twice.
-The names arrive before the ids, so a marker is never drawn without its name.
+```
+3;7;12
+```
+
+The view drops the NPC of every slot of the list together with the values of
+the slot.
+
+An `npcSlotsShow` payload is a frame of the NPCs that entered the screen:
+
+```
+3:000ABCDE;7:0000BEEF
+```
+
+Every tuple is `slot:id`, separated by semicolons. The slot is the number of
+the slot of the overlay and the id is the form id of the NPC. The payload
+only carries the NPCs that entered the screen, so the id of an NPC is never
+sent twice.
+
+The names of the NPCs travel on a channel of their own: they are a record of
+the form id of an NPC and its display name, and they are only sent when the
+view does not know them yet. A name never changes, so it is read from the
+engine once per NPC and sent once per NPC as well. The names arrive before
+the frame of the slots, so a marker is never drawn without the name of its
+NPC. When the world is replaced, the plugin sends `onNpcNamesClear` and the
+view drops the names of the old world.
 
 A `style` payload carries the styles of the overlay. It is sent with the
 handshake and not with every frame: the base size of the font of the numbers
 is a constant of the plugin, so the stylesheet does not have to know it. The
 view sets the value as the global custom property
 `--npc-damage-base-font-size` of the document, where the stylesheet picks it
-up.
+up. The payload also carries the number of the slots, so the view knows how
+many elements it has to draw.
 
 A frame carries the numbers above the heads:
 
 ```
-0:1042,215,1.18;1:987,230,1.00
+3:1042,215,1.18;7:987,230,1.00
 ```
 
-Every tuple is `index:x,y,scale`, separated by semicolons. The index is the
-position of the NPC in the list of the ids, the numbers are the plain CSS
-values of the number: the horizontal offset, the vertical offset in whole
-pixels and the scale of the font. The scale is written with two decimals,
-because it is a whole font size divided by the base size of the stylesheet.
-Only the markers that really moved are part of a frame, so a frame is empty -
-and not sent at all - while nothing moves.
+Every tuple is `slot:x,y,scale`, separated by semicolons. The slot is the
+number of the slot of the overlay, the numbers are the plain CSS values of the
+number: the horizontal offset, the vertical offset in whole pixels and the
+scale of the font. The scale is written with two decimals, because it is a
+whole font size divided by the base size of the stylesheet. Only the slots
+that really moved are part of a frame, so a frame is empty - and not sent at
+all - while nothing moves.
 
 The view registers `window.onViewReady` as well and calls it once its own
 handler is installed. The plugin answers with a snapshot, which closes the race
 between the view being created and the view script being evaluated. The NPC
 channels only start after that handshake, because they need the view to know
-the `onNpcIdsUpdate`, `onNpcNamesUpdate` and `onNpcMarkersUpdate` functions.
+the `onNpcSlotsHide`, `onNpcSlotsShow` and `onNpcSlotsMove` functions.
 
 The view also reports the size of its viewport to the plugin, because the
 positions are sent in pixels:
@@ -414,6 +445,7 @@ src/
   npc/
     NpcTypes.h           head marker of a single NPC
     NpcTracker.h/.cpp    collects the visible NPC heads
+    NpcSlots.h/.cpp      pool of the slots of the overlay
     NpcOverlay.h/.cpp    game thread task that refreshes the markers
   ui/
     PrismaBridge.h/.cpp  failure tolerant PrismaUI wrapper

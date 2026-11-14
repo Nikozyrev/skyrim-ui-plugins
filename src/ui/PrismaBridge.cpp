@@ -2,15 +2,16 @@
 
 #include "PrismaUI_API.h"
 #include "damage/DamageTracker.h"
+#include "npc/NpcSlots.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <charconv>
 #include <cstdio>
 #include <exception>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <utility>
 
 using JSON = nlohmann::json;
@@ -23,13 +24,22 @@ namespace UI
 		constexpr auto kUpdateFunction = "onDamageUpdate";
 
 		/// Name of the JavaScript entry point the NPC head overlay listens on.
-		/// The ids of the visible NPCs, their names and their positions use
-		/// three separate functions: the ids change far less often than the
-		/// positions and the names change even less often than the ids.
-		constexpr auto kNpcIdsFunction = "onNpcIdsUpdate";
-		constexpr auto kNpcNamesFunction = "onNpcNamesUpdate";
+		///
+		/// The slots are owned by the plugin, so the view only follows them:
+		/// the slots of the NPCs that left the screen, the slots of the NPCs
+		/// that entered the screen (with their ids and their names) and the
+		/// slots of the NPCs that moved.
+		constexpr auto kNpcSlotsHideFunction = "onNpcSlotsHide";
+		constexpr auto kNpcSlotsShowFunction = "onNpcSlotsShow";
+		constexpr auto kNpcSlotsMoveFunction = "onNpcSlotsMove";
+
+		/// Name of the JavaScript entry point the names of the NPCs listen on.
+		///
+		/// The names are a record of the form id of an NPC and its display
+		/// name. They travel on a channel of their own, because a name never
+		/// changes: it is only sent when the view does not know it yet.
+		constexpr auto kNpcNamesFunction = "onNpcNames";
 		constexpr auto kNpcNamesClearFunction = "onNpcNamesClear";
-		constexpr auto kNpcMarkersFunction = "onNpcMarkersUpdate";
 
 		/// Name of the JavaScript entry point the view uses to report the size
 		/// of its viewport. The positions of the markers are sent in pixels,
@@ -162,40 +172,70 @@ namespace UI
 			return actors;
 		}
 
-		/// The ids of the visible NPCs, in the order of the indexes that the
-		/// frames of the positions use.
+		/// Builds a frame of the slots that have to be freed.
 		///
-		/// The payload is a plain array of the form ids: the ids have their
-		/// own channel, so they do not need a type of their own.
-		JSON NpcIdsToJson(const std::vector<Damage::ActorId>& a_ids)
-		{
-			JSON ids = JSON::array();
-
-			for (const auto id : a_ids) {
-				ids.push_back(FormIdToString(id));
-			}
-
-			return ids;
-		}
-
-		/// Builds a frame of the positions of the visible NPCs.
-		///
-		/// A frame is a list of the tuples "index:x,y,scale", separated by
-		/// semicolons. The index is the position of the NPC in the list of the
-		/// ids, so a frame only carries the numbers that really changed.
-		std::string BuildFrame(const std::vector<Npc::ViewMarker>& a_values,
-							   const std::vector<std::size_t>& a_indices)
+		/// A frame is a plain list of the numbers of the slots, separated by
+		/// semicolons.
+		std::string BuildHideFrame(const std::vector<std::uint8_t>& a_slots)
 		{
 			std::string frame;
 
-			for (const auto index : a_indices) {
+			for (const auto slot : a_slots) {
 				if (!frame.empty()) {
 					frame.push_back(';');
 				}
 
-				const auto& value = a_values[index];
+				frame += std::to_string(slot);
+			}
 
-				frame += std::to_string(index);
+			return frame;
+		}
+
+		/// Builds a frame of the NPCs that entered the screen.
+		///
+		/// A frame is a list of the tuples "slot:id", separated by
+		/// semicolons. The slot is the number of the slot of the overlay and
+		/// the id is the form id of the NPC. The name of an NPC travels on a
+		/// channel of its own, so it never needs to be escaped here.
+		std::string BuildShowFrame(const std::vector<Npc::SlotEntry>& a_entries)
+		{
+			std::string frame;
+
+			for (const auto& entry : a_entries) {
+				if (!frame.empty()) {
+					frame.push_back(';');
+				}
+
+				frame += std::to_string(entry.index);
+				frame.push_back(':');
+
+				// The form id is a number in its hexadecimal notation, so it
+				// never contains a separator.
+				frame += FormIdToString(entry.id);
+			}
+
+			return frame;
+		}
+
+		/// Builds a frame of the positions of the slots.
+		///
+		/// A frame is a list of the tuples "slot:x,y,scale", separated by
+		/// semicolons. The slot is the number of the slot of the overlay and
+		/// the numbers are the plain CSS values of the marker, so a frame only
+		/// carries the slots that really moved.
+		std::string BuildFrame(const std::vector<Npc::ViewMarker>& a_values,
+							   const std::vector<std::uint8_t>& a_slots)
+		{
+			std::string frame;
+
+			for (std::size_t i = 0; i < a_slots.size(); ++i) {
+				if (!frame.empty()) {
+					frame.push_back(';');
+				}
+
+				const auto& value = a_values[i];
+
+				frame += std::to_string(a_slots[i]);
 				frame.push_back(':');
 				frame += std::to_string(value.x);
 				frame.push_back(',');
@@ -330,9 +370,13 @@ namespace UI
 		// The base size of the font of the numbers is a constant of the
 		// plugin, so the stylesheet does not have to know it: the view sets
 		// the value as a global custom property of the document.
+		//
+		// The number of the slots is sent as well: the view draws one
+		// element per slot, so it has to know how many slots to expect.
 		JSON payload{
 			{ "type", "style" },
 			{ "baseFontSize", Npc::kBaseFontSize },
+			{ "slotCount", Npc::kMaxSlots },
 		};
 
 		Send(kStyleFunction, payload.dump());
@@ -340,12 +384,13 @@ namespace UI
 
 	void Bridge::ResetNpcState()
 	{
-		// The view starts with an empty list of markers, so the table and the
-		// positions have to be sent again even when they did not change since
-		// the last update.
 		std::lock_guard<std::mutex> lock(_npcMutex);
-		_npcIds.clear();
-		_npcFrame.clear();
+
+		// The view starts with an empty overlay, so the ids and the names of
+		// every NPC have to be sent again even when they did not change since
+		// the last update.
+		_npcStateStale = true;
+		_slotSent.reset();
 	}
 
 	void Bridge::OnViewportUpdate(const char* a_argument)
@@ -369,7 +414,7 @@ namespace UI
 
 		// The positions are in pixels, so every marker moved to another pixel
 		// when the size of the viewport changed.
-		_npcFrame.clear();
+		_slotSent.reset();
 
 		// The size changes on every pixel while the window of the overlay is
 		// dragged, so only the first one is worth a line in the log.
@@ -426,111 +471,165 @@ namespace UI
 		Send(kUpdateFunction, payload.dump());
 	}
 
-	void Bridge::SendNpcMarkers(const std::vector<Npc::Marker>& a_markers)
+	void Bridge::SendNpcSlots(const Npc::SlotDelta& a_delta)
 	{
-    if (!_api || !_viewReady.load(std::memory_order_acquire)) {
-        return;
-    }
+		if (!_api || !_viewReady.load(std::memory_order_acquire)) {
+			return;
+		}
 
-    std::lock_guard<std::mutex> lock(_npcMutex);
+		std::lock_guard<std::mutex> lock(_npcMutex);
 
-    if (!_viewport.IsValid()) {
-        return;
-    }
+		if (!_viewport.IsValid()) {
+			return;
+		}
 
-    // Очищаем буферы без освобождения выделенной памяти (capacity сохраняется)
-    _scratchIds.clear();
-    _scratchValues.clear();
-    _scratchChanged.clear();
+		// The slots of the NPCs that left the screen. The slots that the
+		// view did not get yet are sent again, so a lost message cannot
+		// leave a marker of an NPC that is long gone on the screen.
+		_scratchHide.clear();
+		_scratchHide.insert(_scratchHide.end(), _pendingHide.begin(), _pendingHide.end());
 
-    const std::size_t count = a_markers.size();
-    _scratchIds.reserve(count);
-    _scratchValues.reserve(count);
-    _scratchChanged.reserve(count);
+		for (const auto slot : a_delta.hidden) {
+			if (std::find(_scratchHide.begin(), _scratchHide.end(), slot) == _scratchHide.end()) {
+				_scratchHide.push_back(slot);
+			}
+		}
 
-    // 1. Собираем ID и проверяем новые имена за один проход
-    JSON names = nullptr;
-    for (const auto& marker : a_markers) {
-        _scratchIds.push_back(marker.id);
+		if (!_scratchHide.empty()) {
+			if (Send(kNpcSlotsHideFunction, BuildHideFrame(_scratchHide))) {
+				for (const auto slot : _scratchHide) {
+					_slotSent.reset(slot);
+				}
 
-				const bool isKnown = _knownNames.contains(marker.id);
-        // Имя отправляем только если вообще не видели этого NPC в текущей сессии
-        if (!isKnown) {
-            if (names.is_null()) {
-                names = JSON::object();
-            }
-            names[FormIdToString(marker.id)] = marker.name;
-						_knownNames.try_emplace(marker.id, marker.name);
-        }
-    }
+				_pendingHide.clear();
+			}
+			else {
+				// The view did not get the message, so the slots are hidden
+				// with one of the next frames.
+				_pendingHide = _scratchHide;
+			}
+		}
 
-    const bool idsChanged = (_scratchIds != _npcIds);
+		// The NPCs that entered the screen. Their ids travel with the numbers
+		// of their slots, so the view can look them up by it. Their names
+		// travel on a channel of their own.
+		if (_npcStateStale) {
+			// The view lost its state, so every NPC is sent again.
+			_knownNames.clear();
 
-    // 2. Считаем экранные координаты и сразу ищем изменения (без создания nextFrame)
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto& marker = a_markers[i];
-        auto viewMarker = Npc::BuildViewMarker(marker, _viewport);
-        _scratchValues.push_back(viewMarker);
+			if (!SendShowAndNames(a_delta.occupied)) {
+				return;
+			}
 
-        if (idsChanged) {
-            _scratchChanged.push_back(i);
-            continue;
-        }
+			_npcStateStale = false;
+		}
+		else if (!a_delta.shown.empty()) {
+			if (!SendShowAndNames(a_delta.shown)) {
+				// The view does not know the NPCs, so the whole state is sent
+				// again with the next frame.
+				_npcStateStale = true;
+				return;
+			}
+		}
 
-        const auto it = _npcFrame.find(marker.id);
-        if (it == _npcFrame.end() || it->second != viewMarker) {
-            _scratchChanged.push_back(i);
-        }
-    }
+		// The slots of the NPCs that moved.
+		_scratchSlots.clear();
+		_scratchValues.clear();
 
-    // 3. Отправка данных на фронт
-    if (!names.is_null()) {
-        const auto payload = names.dump();
+		for (const auto& entry : a_delta.occupied) {
+			const auto value = Npc::BuildViewMarker(entry.marker, _viewport);
 
-        if (!Send(kNpcNamesFunction, payload)) {
-            // Если отправка не удалась, откатываем кеш имен, чтобы попробовать в след. кадре
-            for (const auto& marker : a_markers) {
-                _knownNames.erase(marker.id);
-            }
-            return;
-        }
-    }
+			if (_slotSent.test(entry.index) && _slotValues[entry.index] == value) {
+				continue;
+			}
 
-    if (idsChanged) {
-				std::string npcIdsPayload = NpcIdsToJson(_scratchIds).dump();
+			_scratchSlots.push_back(entry.index);
+			_scratchValues.push_back(value);
+		}
 
-        if (!Send(kNpcIdsFunction, npcIdsPayload)) {
-            return;
-        }
-        _npcIds = _scratchIds; // Копирует в уже выделенную память _npcIds
-    }
+		if (_scratchSlots.empty()) {
+			return;
+		}
 
-    if (_scratchChanged.empty()) {
-        return; // Ничего не сдвинулось, _npcFrame обновлять не нужно
-    }
+		if (!Send(kNpcSlotsMoveFunction, BuildFrame(_scratchValues, _scratchSlots))) {
+			// The positions are not known by the view, so they are sent again
+			// with the next frame.
+			return;
+		}
 
-    if (!Send(kNpcMarkersFunction, BuildFrame(_scratchValues, _scratchChanged))) {
-        return;
-    }
+		for (std::size_t i = 0; i < _scratchSlots.size(); ++i) {
+			_slotValues[_scratchSlots[i]] = _scratchValues[i];
+			_slotSent.set(_scratchSlots[i]);
+		}
+	}
 
-    // 4. Обновляем _npcFrame на месте, без пересоздания хеш-таблицы
-    if (idsChanged) {
-        _npcFrame.clear();
-        for (std::size_t i = 0; i < count; ++i) {
-            _npcFrame.emplace(_scratchIds[i], _scratchValues[i]);
-        }
-    } else {
-        for (std::size_t idx : _scratchChanged) {
-            _npcFrame[_scratchIds[idx]] = _scratchValues[idx];
-        }
-    }
+	bool Bridge::SendShowAndNames(const std::vector<Npc::SlotEntry>& a_entries)
+	{
+		if (a_entries.empty()) {
+			return true;
+		}
+
+		// The names of the NPCs that the view does not know yet. A name never
+		// changes, so it is only sent once per NPC.
+		JSON names = JSON::object();
+
+		std::vector<Damage::ActorId> sent;
+
+		for (const auto& entry : a_entries) {
+			if (!_knownNames.insert(entry.id).second) {
+				continue;
+			}
+
+			names[FormIdToString(entry.id)] = entry.name;
+			sent.push_back(entry.id);
+		}
+
+		if (!names.empty()) {
+			logger::info("Sending names: {}", names.dump());
+			if (!Send(kNpcNamesFunction, names.dump())) {
+				// The view does not know the names, so they are sent again
+				// with the next frame.
+				for (const auto id : sent) {
+					_knownNames.erase(id);
+				}
+
+				return false;
+			}
+		}
+		
+		std::string showFrame = BuildShowFrame(a_entries);
+		logger::info("Sending show slots: {}", showFrame);
+		return Send(kNpcSlotsShowFunction, showFrame);
 	}
 
 	void Bridge::ResetNpcCache() {
+		std::lock_guard<std::mutex> lock(_npcMutex);
+
+		// The world is replaced, so every NPC is gone and every slot is free.
+		Npc::SlotPool::Get().Reset();
+
+		// The view has to drop the NPCs it knows.
+		for (std::size_t i = 0; i < Npc::kMaxSlots; ++i) {
+			if (!_slotSent.test(i)) {
+				continue;
+			}
+
+			const auto slot = static_cast<std::uint8_t>(i);
+
+			if (std::find(_pendingHide.begin(), _pendingHide.end(), slot) == _pendingHide.end()) {
+				_pendingHide.push_back(slot);
+			}
+		}
+
+		_slotSent.reset();
+
+		// The names of the old world are of no use to the new one.
 		_knownNames.clear();
-		_npcIds.clear();
-		_npcFrame.clear();
 		Send(kNpcNamesClearFunction, "");
+
+		// There is nothing to show yet, so the state is not stale: the NPCs
+		// of the new world are sent as soon as they appear.
+		_npcStateStale = false;
 	}
 
 	bool Bridge::Send(const char* a_function, const std::string& a_payload)

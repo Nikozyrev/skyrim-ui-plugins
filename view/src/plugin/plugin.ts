@@ -1,4 +1,4 @@
-import { batch, createSignal } from 'solid-js';
+import { batch, createMemo, createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import { dominantKind, resolveKind } from './damage-colors';
 import { markerProperty } from './marker-properties';
@@ -6,8 +6,10 @@ import type {
   ActorStats,
   DamageEvent,
   DamageUpdate,
-  NpcIdsUpdate,
-  NpcNamesUpdate,
+  NpcNames,
+  NpcSlots,
+  NpcSlotsHide,
+  NpcSlotsShow,
   StyleUpdate,
   TargetDamage,
 } from './types';
@@ -37,42 +39,61 @@ const VIEWPORT_REPORT_INTERVAL_MS = 1000;
  */
 const MAX_DAMAGE_TARGETS = 64;
 
+/**
+ * The number of the slots of the overlay that are drawn until the plugin
+ * tells the real number.
+ *
+ * The plugin owns the slots, so it announces how many of them it has in its
+ * styles. The number is only a fallback for the frames before that message
+ * arrives.
+ */
+const DEFAULT_SLOT_COUNT = 50;
+
 const [feed, setFeed] = createSignal<DamageEvent[]>([]);
 const [actors, setActors] = createSignal<ActorStats[]>([]);
 const [connected, setConnected] = createSignal(false);
 
 /**
- * The ids of the NPCs that are currently visible on the screen.
+ * The NPCs of the slots that are occupied, keyed by the number of the slot.
  *
- * The ids are the stable key of a marker: the plugin only sends them when an
- * NPC entered or left the screen, so the view can reuse the elements it
- * already drew while the NPCs only move around.
+ * The plugin owns the slots: it hands a free one to every NPC that enters the
+ * screen and takes it back when the NPC leaves. The id of an NPC only travels
+ * when it enters the screen, so it is kept in a store of its own, keyed by
+ * the number of the slot.
  */
-const [npcMarkerIds, setNpcMarkerIds] = createSignal<string[]>([]);
+const [npcSlots, setNpcSlots] = createStore<NpcSlots>({});
 
 /**
- * The ids of the visible NPCs in the order of the frames.
+ * The names of the NPCs, keyed by their form id.
  *
- * The frames address their markers by the index of the NPC in this list, so
- * the list is kept next to the properties of the markers.
+ * The names travel on a channel of their own, so they are kept in a store of
+ * their own: a name never changes, so it is only sent when the view does not
+ * know it yet.
  */
-let npcOrder: string[] = [];
+const [npcNames, setNpcNames] = createStore<NpcNames>({});
 
 /**
- * The names of the NPCs that are visible on the screen, keyed by their id.
+ * The number of the slots of the overlay.
  *
- * The plugin sends the names of the NPCs that entered the screen in their own
- * message, so they are kept in a store of their own: the name of an NPC is
- * looked up by its id and never travels with the markers.
+ * The plugin announces it together with the styles of the overlay.
  */
-const [npcNames, setNpcNames] = createStore<Record<string, string>>({});
+const [slotCount, setSlotCount] = createSignal(DEFAULT_SLOT_COUNT);
+
+/**
+ * The numbers of the slots of the overlay.
+ *
+ * The slots are drawn once and are never re-created: the plugin only fills
+ * them. An NPC that enters or leaves the screen therefore never touches the
+ * elements of the other ones.
+ */
+const slotIndexes = createMemo(() => Array.from({ length: slotCount() }, (_, index) => index));
 
 /**
  * The damage every target received, keyed by the form id of the target.
  *
  * The ids are the ones the plugin sends as the `targetId` of a damage event
- * and as the `id` of an NPC marker, so the overlay can look the damage of a
- * marker up directly.
+ * and as the `id` of the NPC of a slot, so the overlay can look the damage of
+ * a slot up directly.
  *
  * The damage lives in a store instead of a signal, so a hit only touches the
  * entry of its target and only the number above that head is drawn again.
@@ -87,41 +108,41 @@ const [damageByTarget, setDamageByTarget] = createStore<Record<string, TargetDam
  */
 let damageOrder: string[] = [];
 
-export { feed, actors, connected, npcMarkerIds, npcNames, damageByTarget };
+export { feed, actors, connected, npcSlots, npcNames, slotCount, slotIndexes, damageByTarget };
 
 /**
- * Writes the values of a NPC into the global custom properties of the
+ * Writes the values of a slot into the global custom properties of the
  * document.
  *
- * The properties are addressed by the id of the NPC, so a slot of the overlay
- * can point at them with the id of the NPC it shows. The stylesheet resolves
- * the reference on its own, so a frame does not have to touch the elements of
- * the NPCs that did not move.
+ * The properties are addressed by the number of the slot, so the element of a
+ * slot can point at them with its own number. The stylesheet resolves the
+ * reference on its own, so a frame does not have to touch the elements of the
+ * slots that did not move.
  */
-const setMarkerValues = (a_id: string, a_x: number, a_y: number, a_scale: number) => {
+const setMarkerValues = (a_slot: number, a_x: number, a_y: number, a_scale: number) => {
   const style = document.documentElement.style;
 
-  style.setProperty(markerProperty(a_id, 'x'), String(a_x));
-  style.setProperty(markerProperty(a_id, 'y'), String(a_y));
-  style.setProperty(markerProperty(a_id, 'scale'), String(a_scale));
+  style.setProperty(markerProperty(a_slot, 'x'), String(a_x));
+  style.setProperty(markerProperty(a_slot, 'y'), String(a_y));
+  style.setProperty(markerProperty(a_slot, 'scale'), String(a_scale));
 
   // The marker is only drawn once its position is known.
-  style.setProperty(markerProperty(a_id, 'placed'), '1');
+  style.setProperty(markerProperty(a_slot, 'placed'), '1');
 };
 
 /**
- * Drops the values of a NPC.
+ * Drops the values of a slot.
  *
- * The properties are removed instead of being reset, so a NPC that comes back
+ * The properties are removed instead of being reset, so an NPC that comes back
  * to the screen starts without a position again.
  */
-const clearMarkerValues = (a_id: string) => {
+const clearMarkerValues = (a_slot: number) => {
   const style = document.documentElement.style;
 
-  style.removeProperty(markerProperty(a_id, 'x'));
-  style.removeProperty(markerProperty(a_id, 'y'));
-  style.removeProperty(markerProperty(a_id, 'scale'));
-  style.removeProperty(markerProperty(a_id, 'placed'));
+  style.removeProperty(markerProperty(a_slot, 'x'));
+  style.removeProperty(markerProperty(a_slot, 'y'));
+  style.removeProperty(markerProperty(a_slot, 'scale'));
+  style.removeProperty(markerProperty(a_slot, 'placed'));
 };
 
 const parseUpdate = (payload: unknown): DamageUpdate | null => {
@@ -280,28 +301,68 @@ const sweepFeed = () => {
   });
 };
 
-const parseNpcIdsUpdate = (payload: unknown): NpcIdsUpdate | null => {
+const parseNpcSlotsHide = (payload: unknown): NpcSlotsHide | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return null;
   }
 
-  try {
-    const parsed = JSON.parse(payload) as unknown;
+  const slots: NpcSlotsHide = [];
 
-    if (!Array.isArray(parsed)) {
-      return null;
+  // A frame is a plain list of the numbers of the slots, separated by
+  // semicolons.
+  for (const part of payload.split(';')) {
+    if (!part) {
+      continue;
     }
 
-    return parsed.filter(
-      (id): id is string => typeof id === 'string' && id.length > 0,
-    );
-  } catch {
-    // A malformed payload must never break the overlay.
-    return null;
+    const slot = Number(part);
+    if (!Number.isInteger(slot) || slot < 0) {
+      continue;
+    }
+
+    slots.push(slot);
   }
+
+  return slots;
 };
 
-const parseNpcNamesUpdate = (payload: unknown): NpcNamesUpdate | null => {
+const parseNpcSlotsShow = (payload: unknown): NpcSlotsShow | null => {
+  if (typeof payload !== 'string' || payload.length === 0) {
+    return null;
+  }
+
+  const shown: NpcSlotsShow = [];
+
+  // A frame is a list of the tuples "slot:id", separated by semicolons. The
+  // id is a number in its hexadecimal notation, so it never contains a
+  // separator.
+  for (const tuple of payload.split(';')) {
+    if (!tuple) {
+      continue;
+    }
+
+    const separator = tuple.indexOf(':');
+    if (separator <= 0) {
+      continue;
+    }
+
+    const slot = Number(tuple.slice(0, separator));
+    if (!Number.isInteger(slot) || slot < 0) {
+      continue;
+    }
+
+    const id = tuple.slice(separator + 1);
+    if (id.length === 0) {
+      continue;
+    }
+
+    shown.push({ slot, id });
+  }
+
+  return shown;
+};
+
+const parseNpcNames = (payload: unknown): NpcNames | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return null;
   }
@@ -313,7 +374,7 @@ const parseNpcNamesUpdate = (payload: unknown): NpcNamesUpdate | null => {
       return null;
     }
 
-    const names: NpcNamesUpdate = {};
+    const names: NpcNames = {};
 
     for (const [id, name] of Object.entries(parsed as Record<string, unknown>)) {
       if (id && typeof name === 'string') {
@@ -355,80 +416,96 @@ const parseStyleUpdate = (payload: unknown): StyleUpdate | null => {
 };
 
 /**
+ * Applies the NPCs that entered the screen.
+ *
+ * The plugin sends the id of an NPC only once, when it enters the screen. It
+ * is kept in a store of its own, keyed by the number of the slot, so the slot
+ * can look it up without the plugin sending it again.
+ *
+ * The payload is a frame of the tuples "slot:id", separated by semicolons.
+ */
+const applyNpcSlotsShow = (payload: string) => {
+  const shown = parseNpcSlotsShow(payload);
+  if (!shown) {
+    return;
+  }
+
+  batch(() => {
+    for (const entry of shown) {
+      // The id is only written for its own slot, so the slots of the other
+      // ones are not drawn again.
+      setNpcSlots(entry.slot, entry.id);
+    }
+  });
+};
+
+/**
  * Applies the names of the NPCs that entered the screen.
  *
- * The plugin sends the names in their own message and only for the NPCs that
- * the view does not know yet, so the names of the visible NPCs are kept in a
- * store of their own, keyed by the id of their NPC.
+ * The plugin sends the names on their own channel and only for the NPCs that
+ * the view does not know yet, so the names of the NPCs that are already on
+ * the screen are never sent twice.
  */
-const applyNpcNamesUpdate = (payload: string) => {
-  const names = parseNpcNamesUpdate(payload);
+const applyNpcNames = (payload: string) => {
+  const names = parseNpcNames(payload);
   if (!names) {
     return;
   }
 
   batch(() => {
     for (const [id, name] of Object.entries(names)) {
-      if (!id || typeof name !== 'string') {
-        continue;
-      }
-
-      // The name is only written for its own NPC, so the markers of the other
-      // ones are not drawn again.
+      // The name is only written for its own NPC, so the markers of the
+      // other ones are not drawn again.
       setNpcNames(id, name);
     }
   });
 };
 
+/**
+ * Drops the names of the NPCs of the old world.
+ */
 const applyNpcNamesClear = () => {
   setNpcNames(reconcile({}));
-}
+};
 
 /**
- * Applies the ids of the NPCs that are currently visible on the screen.
+ * Applies the NPCs that left the screen.
  *
- * The plugin only sends the ids when an NPC entered or left the screen, so
- * the list is replaced with the complete set of the visible NPCs. The order
- * of the list matters: the frames of the positions address their markers by
- * the index of the NPC in it.
- *
- * The names of the NPCs that left the screen are kept: they are only dropped
- * when the last NPC left the screen.
+ * The plugin sends the numbers of the slots that have to be freed, so the
+ * store of the view only loses the entries of these slots.
  */
-const applyNpcIdsUpdate = (payload: string) => {
-  const ids = parseNpcIdsUpdate(payload);
-  if (!ids) {
+const applyNpcSlotsHide = (payload: string) => {
+  const slots = parseNpcSlotsHide(payload);
+  if (!slots) {
     return;
   }
 
-  const previous = new Set(npcOrder);
-  const current = new Set(ids);
+  const next: NpcSlots = { ...npcSlots };
 
-  npcOrder = ids;
-  setNpcMarkerIds(ids);
+  for (const slot of slots) {
+    delete next[slot];
 
-  // The values of the NPCs that left the screen are dropped, so a NPC that
-  // comes back to the screen starts without a position again.
-  for (const id of previous) {
-    if (!current.has(id)) {
-      clearMarkerValues(id);
-    }
+    // The values of the slot are dropped, so an NPC that comes back to the
+    // screen starts without a position again.
+    clearMarkerValues(slot);
   }
+
+  setNpcSlots(reconcile(next));
 };
 
 /**
  * Applies the numbers above the heads of the NPCs that are visible on the
  * screen.
  *
- * A frame is a list of the tuples "index:x,y,scale", separated by semicolons.
- * The index is the position of the NPC in the list of the ids, the numbers are
- * the plain CSS values of the number: the horizontal offset, the vertical
- * offset in whole pixels and the scale of the font.
+ * A frame is a list of the tuples "slot:x,y,scale", separated by semicolons.
+ * The slot is the number of the slot of the overlay, the numbers are the
+ * plain CSS values of the number: the horizontal offset, the vertical offset
+ * in whole pixels and the scale of the font.
  *
- * The values are written into the global custom properties of the NPC, so
- * only the markers that really moved change and only those are drawn again.
+ * The values are written into the global custom properties of the slot, so
+ * only the slots that really moved change and only those are drawn again.
  */
-const applyNpcMarkersUpdate = (payload: string) => {
+const applyNpcSlotsMove = (payload: string) => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return;
   }
@@ -445,8 +522,8 @@ const applyNpcMarkersUpdate = (payload: string) => {
       continue;
     }
 
-    const id = npcOrder[Number(chunk.slice(0, separator))];
-    if (!id) {
+    const slot = Number(chunk.slice(0, separator));
+    if (!Number.isInteger(slot) || slot < 0) {
       continue;
     }
 
@@ -463,7 +540,7 @@ const applyNpcMarkersUpdate = (payload: string) => {
       continue;
     }
 
-    setMarkerValues(id, x, y, scale);
+    setMarkerValues(slot, x, y, scale);
 
     applied = true;
   }
@@ -490,6 +567,12 @@ const applyStyleUpdate = (payload: string) => {
   }
 
   document.documentElement.style.setProperty(BASE_FONT_SIZE_PROPERTY, String(update.baseFontSize));
+
+  // The plugin owns the slots, so it announces how many of them the view has
+  // to draw.
+  if (typeof update.slotCount === 'number' && Number.isInteger(update.slotCount) && update.slotCount > 0) {
+    setSlotCount(update.slotCount);
+  }
 };
 
 declare global {
@@ -497,15 +580,18 @@ declare global {
     /** Called by the plugin for every damage update. */
     onDamageUpdate?: (payload: string) => void;
 
-    /** Called by the plugin when the set of the visible NPCs changed. */
-    onNpcIdsUpdate?: (payload: string) => void;
+    /** Called by the plugin for the NPCs that left the screen. */
+    onNpcSlotsHide?: (payload: string) => void;
 
-    /** Called by the plugin when NPCs entered the screen. */
-    onNpcNamesUpdate?: (payload: string) => void;
+    /** Called by the plugin for the NPCs that entered the screen. */
+    onNpcSlotsShow?: (payload: string) => void;
+
+    /** Called by the plugin for the slots that moved. */
+    onNpcSlotsMove?: (payload: string) => void;
+
+    /** Called by the plugin for the names of the NPCs. */
+    onNpcNames?: (payload: string) => void;
     onNpcNamesClear?: (payload: string) => void;
-
-    /** Called by the plugin for every update of the visible NPC heads. */
-    onNpcMarkersUpdate?: (payload: string) => void;
 
     /** Called by the plugin for the styles of the overlay. */
     onStyleUpdate?: (payload: string) => void;
@@ -572,10 +658,11 @@ const stopViewportReport = () => {
  */
 export const initPluginOnWindow = () => {
   window.onDamageUpdate = applyUpdate;
-  window.onNpcIdsUpdate = applyNpcIdsUpdate;
-  window.onNpcNamesUpdate = applyNpcNamesUpdate;
+  window.onNpcSlotsHide = applyNpcSlotsHide;
+  window.onNpcSlotsShow = applyNpcSlotsShow;
+  window.onNpcSlotsMove = applyNpcSlotsMove;
+  window.onNpcNames = applyNpcNames;
   window.onNpcNamesClear = applyNpcNamesClear;
-  window.onNpcMarkersUpdate = applyNpcMarkersUpdate;
   window.onStyleUpdate = applyStyleUpdate;
 
   window.setInterval(sweepFeed, FEED_SWEEP_MS);

@@ -7,10 +7,14 @@
 export type MarkerValue = 'x' | 'y' | 'scale' | 'placed';
 
 /**
- * The name of the custom property that holds one value of one NPC.
+ * The name of the custom property that holds one value of one slot.
  *
  * Every value of a marker lives in a custom property of the document that is
- * addressed by the id of the NPC, so the view finds the values of a NPC with
- * the id it already knows: `--npc-0001ABCD-x`.
+ * addressed by the number of its slot, so the view finds the values of a slot
+ * with the number it already knows: `--npc-slot-3-x`.
+ *
+ * The number of the slot is used instead of the id of the NPC, because the
+ * plugin owns the slots: the id of an NPC changes when it leaves the screen
+ * and comes back, the number of its slot does not have to.
  */
-export const markerProperty = (id: string, value: MarkerValue) => `--npc-${id}-${value}`;
+export const markerProperty = (slot: number, value: MarkerValue) => `--npc-slot-${slot}-${value}`;

@@ -20,13 +20,15 @@ npm run deploy -- "D:\Games\Skyrim Special Edition"
 
 ### How the view talks to the plugin
 
-The plugin calls four global functions:
+The plugin calls five global functions:
 
 ```js
 window.onDamageUpdate(JSON.stringify(payload));
-window.onNpcIdsUpdate(JSON.stringify(payload));
-window.onNpcNamesUpdate(JSON.stringify(payload));
-window.onNpcMarkersUpdate(frame);
+window.onNpcSlotsHide(frame);
+window.onNpcSlotsShow(frame);
+window.onNpcSlotsMove(frame);
+window.onNpcNames(JSON.stringify(names));
+window.onStyleUpdate(JSON.stringify(payload));
 ```
 
 The view announces itself through `window.onViewReady()`, which makes the plugin
@@ -34,46 +36,81 @@ push the complete state again. That closes the race between the view being
 created and this script being evaluated.
 
 The damage payloads are always a JSON string, so they can never be interpreted
-as code. The frame of the head positions is a plain string of numbers.
+as code. The frames of the head overlay are plain strings of numbers.
 
 | Payload type | Shape                                                                                     |
 | ------------ | ----------------------------------------------------------------------------------------- |
 | `event`      | `{ type: "event", actors: [...], event: {...} }` - a single new hit.                       |
 | `snapshot`   | `{ type: "snapshot", actors: [...], events: [...] }` - the full state.                      |
-| `npcIds`     | `[ ... ]` - the form ids of the NPCs that are visible on screen, in order.               |
-| `npcNames`   | `{ ... }` - the names of the NPCs that entered the screen, keyed by their id.              |
-| `style`      | `{ type: "style", baseFontSize: 11 }` - the styles of the overlay.                          |
+| `npcSlots`   | a frame of the numbers of the slots of the NPCs that left the screen.                      |
+| `npcShow`    | a frame of the NPCs that entered the screen, with the number of their slot.                |
+| `npcNames`   | `{ ... }` - the names of the NPCs, keyed by their form id.                                 |
+| `style`      | `{ type: "style", baseFontSize: 11, slotCount: 50 }` - the styles of the overlay.           |
 
-`actors` holds the aggregated damage per character, `events` the recent hits,
-`ids` the visible NPCs and `names` their display names. See `src/plugin/types.ts`
-for the exact shape. The ids and the names have their own channels, so their
-payloads are a plain array and a plain record without a type of their own.
+`actors` holds the aggregated damage per character, `events` the recent hits.
+See `src/plugin/types.ts` for the exact shape.
+
+The slots of the overlay belong to the plugin: it hands a free one to every NPC
+that enters the screen and takes it back when the NPC leaves. The view draws
+one element per slot and follows the numbers that the plugin sends, so it never
+has to know how many NPCs are on the screen.
+
+The NPCs that left the screen travel as a plain list of the numbers of their
+slots:
+
+```
+3;7;12
+```
+
+The view drops the NPC of every slot of the list together with the values of
+the slot.
+
+An NPC that entered the screen travels with the number of its slot and its id:
+
+```
+3:000ABCDE;7:0000BEEF
+```
+
+Every tuple is `slot:id`, separated by semicolons. The view keeps the id of the
+NPC in a store that is keyed by the number of the slot, so it is never sent
+twice.
+
+The names travel on a channel of their own and are kept in a store of their
+own, keyed by the form id of the NPC:
+
+```json
+{ "000ABCDE": "Bandit" }
+```
+
+A name never changes, so the plugin sends it only when the view does not know
+it yet. The names arrive before the frame of the slots, so a marker is never
+drawn without the name of its NPC.
 
 A frame carries the numbers above the heads and nothing else:
 
 ```
-0:1042,215,1.18;1:987,230,1.00
+3:1042,215,1.18;7:987,230,1.00
 ```
 
-Every tuple is `index:x,y,scale`, separated by semicolons. The index is the
-position of the NPC in the list of the ids, the numbers are the plain CSS
-values of the number: the horizontal offset, the vertical offset in whole
-pixels and the scale of the font. The scale is written with two decimals. The
-plugin computes them, so the view only copies them into the stylesheet. Only
-the markers that really moved are part of a frame.
+Every tuple is `slot:x,y,scale`, separated by semicolons. The slot is the
+number of the slot of the overlay, the numbers are the plain CSS values of the
+number: the horizontal offset, the vertical offset in whole pixels and the
+scale of the font. The scale is written with two decimals. The plugin computes
+them, so the view only copies them into the stylesheet. Only the slots that
+really moved are part of a frame.
 
 The view writes every value of a marker into a global custom property of the
-document that is named after the id of its NPC:
+document that is named after the number of its slot:
 
 ```ts
-document.documentElement.style.setProperty('--npc-0001ABCD-x', '1042');
+document.documentElement.style.setProperty('--npc-slot-3-x', '1042');
 ```
 
-The slot of the overlay only points at those properties, so the stylesheet
+The element of the slot only points at those properties, so the stylesheet
 resolves the values of the NPC that occupies the slot:
 
 ```ts
-style="--npc-damage-x: var(--npc-0001ABCD-x, 0)"
+style="--npc-damage-x: var(--npc-slot-3-x, 0)"
 ```
 
 The plugin sends the positions in pixels, so the view reports the size of its
@@ -110,17 +147,16 @@ entry of the marker id.
 The damage lives in a Solid store, so a hit only writes the entry of its target
 and only the number above that head is drawn again.
 
-The ids of the visible NPCs only change when an NPC enters or leaves the
-screen, so the list of the markers is stable while the NPCs only move around.
-The markers themselves arrive with every frame and only carry the values of
-the number above the head, so the elements are reused between the frames and
-only their position and their number are updated.
+The slots of the overlay are stable while the NPCs only move around, so the
+elements of the slots are reused between the frames and only their position and
+their number are updated.
 
 The positions do not live in a Solid store: every value of a marker is written
-into a global custom property of the document that is named after the id of its
-NPC (`--npc-0001ABCD-x`). The slot of the overlay only points at those
+into a global custom property of the document that is named after the number of
+its slot (`--npc-slot-3-x`). The element of the slot only points at those
 properties, so the stylesheet resolves the value of the NPC that occupies the
-slot. A frame therefore only writes the properties of the markers that really
-moved, and the elements of the other NPCs are not touched at all. The names of
-the NPCs arrive in their own message and are kept in a map of their own, so
-they never travel with the positions.
+slot. A frame therefore only writes the properties of the slots that really
+moved, and the elements of the other slots are not touched at all. The id of an
+NPC arrives with the slot that it occupies and is kept in a store of their own,
+and the name of an NPC arrives on a channel of their own. Neither of them
+travels with the positions.

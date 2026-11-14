@@ -1,5 +1,6 @@
 ﻿#include "npc/NpcOverlay.h"
 
+#include "npc/NpcSlots.h"
 #include "npc/NpcTracker.h"
 #include "ui/PrismaBridge.h"
 
@@ -87,15 +88,20 @@ namespace Npc
 			// The overlay is pointless without a view to draw on.
 			if (UI::Bridge::Get().IsReady()) {
 				// The tracker clears its markers when there is nothing to
-				// track, so the view also drops the circles of the NPCs
-				// that left the screen.
+				// track, so the pool also frees the slots of the NPCs that
+				// left the screen.
 				Npc::Tracker::Get().Collect();
 				const auto& markers = Npc::Tracker::Get().Markers();
 
+				// The pool owns the slots: it keeps the slot of an NPC that
+				// is still on the screen, frees the slot of an NPC that left
+				// and hands a free one to an NPC that entered the screen.
+				const auto delta = Npc::SlotPool::Get().Update(markers);
+
 				// The bridge takes care of the traffic: it only sends the
-				// table of the visible NPCs when the set of them changed and
-				// it skips a frame in which no marker moved.
-				UI::Bridge::Get().SendNpcMarkers(markers);
+				// slots that really changed and it skips a frame in which no
+				// marker moved.
+				UI::Bridge::Get().SendNpcSlots(delta);
 			}
 		}
 		catch (const std::exception& a_error) {

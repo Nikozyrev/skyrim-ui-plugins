@@ -68,31 +68,53 @@ export type DamageUpdate = {
 };
 
 /**
- * The ids of the NPCs that are visible on the screen.
+ * The NPC of every occupied slot, keyed by the number of the slot.
  *
- * The plugin only sends this payload when the set of the visible NPCs
- * changed, so the ids are the stable key of the list of markers: the view
- * can reuse the elements it already drew.
- *
- * The payload is a plain array of the form ids: the ids have their own
- * channel, so they do not need a type of their own.
- *
- * The order matters: the frames of the positions address their markers by
- * the index of the NPC in this list.
+ * The plugin owns the slots: it hands a free one to every NPC that enters
+ * the screen and takes it back when the NPC leaves. The id of an NPC travels
+ * with the number of the slot that it occupies, so the view can look it up
+ * without knowing it in advance.
  */
-export type NpcIdsUpdate = string[];
+export type NpcSlots = Record<number, string>;
 
 /**
- * The names of the NPCs that are visible on the screen.
+ * The names of the NPCs, keyed by their form id.
  *
- * The plugin only sends the names of the NPCs that entered the screen, in
- * their own message, so the names never travel with the positions.
- *
- * The payload is a plain record of the display names, keyed by the form id of
- * their NPC: the names have their own channel, so they do not need a type of
- * their own.
+ * The names travel on a channel of their own, so they are kept in a store of
+ * their own: a name never changes, so it is only sent when the view does not
+ * know it yet.
  */
-export type NpcNamesUpdate = Record<string, string>;
+export type NpcNames = Record<string, string>;
+
+/**
+ * One NPC that entered the screen.
+ *
+ * The payload of the plugin is a frame of the tuples "slot:id", separated by
+ * semicolons. The name of the NPC travels on the channel of the names.
+ */
+export type NpcSlotEntry = {
+  /** The number of the slot of the overlay. */
+  slot: number;
+
+  /** The form id of the NPC. */
+  id: string;
+};
+
+/**
+ * The NPCs that entered the screen.
+ *
+ * The plugin only sends the NPCs that entered the screen, so the store of the
+ * view is only touched when a NPC really shows up.
+ */
+export type NpcSlotsShow = NpcSlotEntry[];
+
+/**
+ * The numbers of the slots of the NPCs that left the screen.
+ *
+ * The plugin only sends the slots of the NPCs that left the screen, so the
+ * store of the view is only touched when a NPC really goes away.
+ */
+export type NpcSlotsHide = number[];
 
 /**
  * The styles of the overlay.
@@ -107,4 +129,7 @@ export type StyleUpdate = {
 
   /** The base size of the font of the numbers, in pixels. */
   baseFontSize: number;
+
+  /** The number of the slots of the overlay. */
+  slotCount?: number;
 };
