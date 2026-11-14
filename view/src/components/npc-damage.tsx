@@ -1,7 +1,7 @@
-import { Index, createMemo, type Accessor } from 'solid-js';
+import { Index, createMemo, onCleanup, onMount, type Accessor } from 'solid-js';
 import { damageByTarget, npcNames, npcSlots, slotIndexes } from '../plugin/plugin';
 import { DAMAGE_KIND_TEXT } from '../plugin/damage-colors';
-import { markerProperty } from '../plugin/marker-properties';
+import { registerSlotElement, unregisterSlotElement } from '../plugin/slot-elements';
 import type { TargetDamage } from '../plugin/types';
 
 const formatAmount = (value: number) => Math.round(value).toString();
@@ -68,25 +68,31 @@ const NpcDamageSlot = (props: { index: number }) => {
   /**
    * The values of the slot.
    *
-   * The values of a slot live in the global custom properties of the
-   * document, so the element only points at them: the property of the slot
-   * follows the NPC that occupies it. A slot without a position keeps the
-   * fallback, so it is drawn nowhere.
-   *
-   * The names of the properties only depend on the number of the slot, so
-   * they are written down once.
+   * The values of a slot are written into the element of the slot itself, so
+   * the element only has to be known to the plugin. The plugin looks it up by
+   * the number of the slot, which is why the element is registered here when
+   * the component is mounted.
    */
-  const style = {
-    '--npc-damage-x': `var(${markerProperty(props.index, 'x')}, 0)`,
-    '--npc-damage-y': `var(${markerProperty(props.index, 'y')}, 0)`,
-    '--npc-damage-scale': `var(${markerProperty(props.index, 'scale')}, 1)`,
-    '--npc-damage-placed': `var(${markerProperty(props.index, 'placed')}, 0)`,
-  };
+  let element: HTMLDivElement | undefined;
+
+  onMount(() => {
+    if (element) {
+      registerSlotElement(props.index, element);
+    }
+  });
+
+  onCleanup(() => {
+    if (element) {
+      unregisterSlotElement(props.index, element);
+    }
+  });
 
   return (
     <div
       class="npc-damage"
-      style={style}
+      ref={(el) => {
+        element = el;
+      }}
     >
       <div class="w-fit text-center text-white">{name()}</div>
       <Damage id={id} />

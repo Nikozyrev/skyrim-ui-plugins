@@ -75,12 +75,11 @@ body {
   left: 0;
   transform-origin: 0 0;
   transform: translate(
-      calc(var(--npc-damage-x, 0) * 1px),
-      calc(var(--npc-damage-y, 0) * 1px)
+      calc(var(--npc-damage-x, -9999) * 1px),
+      calc(var(--npc-damage-y, -9999) * 1px)
     )
     scale(var(--npc-damage-scale, 1));
   font-size: calc(var(--npc-damage-base-font-size) * 1px);
-  opacity: var(--npc-damage-placed, 0);
   will-change: transform;
   font-weight: 700;
   line-height: 1;

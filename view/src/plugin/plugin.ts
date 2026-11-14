@@ -1,7 +1,7 @@
 import { batch, createMemo, createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import { dominantKind, resolveKind } from './damage-colors';
-import { markerProperty } from './marker-properties';
+import { clearMarkerValues, setMarkerValues } from './slot-elements';
 import type {
   ActorStats,
   DamageEvent,
@@ -86,7 +86,9 @@ const [slotCount, setSlotCount] = createSignal(DEFAULT_SLOT_COUNT);
  * them. An NPC that enters or leaves the screen therefore never touches the
  * elements of the other ones.
  */
-const slotIndexes = createMemo(() => Array.from({ length: slotCount() }, (_, index) => index));
+const slotIndexes = createMemo(() =>
+  Array.from({ length: slotCount() }, (_, index) => index),
+);
 
 /**
  * The damage every target received, keyed by the form id of the target.
@@ -98,7 +100,9 @@ const slotIndexes = createMemo(() => Array.from({ length: slotCount() }, (_, ind
  * The damage lives in a store instead of a signal, so a hit only touches the
  * entry of its target and only the number above that head is drawn again.
  */
-const [damageByTarget, setDamageByTarget] = createStore<Record<string, TargetDamage>>({});
+const [damageByTarget, setDamageByTarget] = createStore<
+  Record<string, TargetDamage>
+>({});
 
 /**
  * The ids of the targets in the order they were hit, the oldest one first.
@@ -108,41 +112,15 @@ const [damageByTarget, setDamageByTarget] = createStore<Record<string, TargetDam
  */
 let damageOrder: string[] = [];
 
-export { feed, actors, connected, npcSlots, npcNames, slotCount, slotIndexes, damageByTarget };
-
-/**
- * Writes the values of a slot into the global custom properties of the
- * document.
- *
- * The properties are addressed by the number of the slot, so the element of a
- * slot can point at them with its own number. The stylesheet resolves the
- * reference on its own, so a frame does not have to touch the elements of the
- * slots that did not move.
- */
-const setMarkerValues = (a_slot: number, a_x: number, a_y: number, a_scale: number) => {
-  const style = document.documentElement.style;
-
-  style.setProperty(markerProperty(a_slot, 'x'), String(a_x));
-  style.setProperty(markerProperty(a_slot, 'y'), String(a_y));
-  style.setProperty(markerProperty(a_slot, 'scale'), String(a_scale));
-
-  // The marker is only drawn once its position is known.
-  style.setProperty(markerProperty(a_slot, 'placed'), '1');
-};
-
-/**
- * Drops the values of a slot.
- *
- * The properties are removed instead of being reset, so an NPC that comes back
- * to the screen starts without a position again.
- */
-const clearMarkerValues = (a_slot: number) => {
-  const style = document.documentElement.style;
-
-  style.removeProperty(markerProperty(a_slot, 'x'));
-  style.removeProperty(markerProperty(a_slot, 'y'));
-  style.removeProperty(markerProperty(a_slot, 'scale'));
-  style.removeProperty(markerProperty(a_slot, 'placed'));
+export {
+  feed,
+  actors,
+  connected,
+  npcSlots,
+  npcNames,
+  slotCount,
+  slotIndexes,
+  damageByTarget,
 };
 
 const parseUpdate = (payload: unknown): DamageUpdate | null => {
@@ -224,7 +202,10 @@ const addDamage = (a_event: DamageEvent) => {
  * whole session, so they are the base of the damage. The hits of the actors that
  * are not part of the aggregates are added from the events.
  */
-const buildDamage = (a_actors: ActorStats[], a_events: DamageEvent[]): Record<string, TargetDamage> => {
+const buildDamage = (
+  a_actors: ActorStats[],
+  a_events: DamageEvent[],
+): Record<string, TargetDamage> => {
   const map: Record<string, TargetDamage> = {};
 
   for (const actor of a_actors) {
@@ -266,7 +247,11 @@ const applyUpdate = (payload: string) => {
   setActors(Array.isArray(update.actors) ? update.actors : []);
 
   if (update.type === 'snapshot') {
-    setFeed(Array.isArray(update.events) ? update.events.slice(0, MAX_FEED_ENTRIES) : []);
+    setFeed(
+      Array.isArray(update.events)
+        ? update.events.slice(0, MAX_FEED_ENTRIES)
+        : [],
+    );
 
     // A snapshot carries the complete state, so the damage is rebuilt
     // instead of being extended.
@@ -376,7 +361,9 @@ const parseNpcNames = (payload: unknown): NpcNames | null => {
 
     const names: NpcNames = {};
 
-    for (const [id, name] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [id, name] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
       if (id && typeof name === 'string') {
         names[id] = name;
       }
@@ -502,8 +489,8 @@ const applyNpcSlotsHide = (payload: string) => {
  * plain CSS values of the number: the horizontal offset, the vertical offset
  * in whole pixels and the scale of the font.
  *
- * The values are written into the global custom properties of the slot, so
- * only the slots that really moved change and only those are drawn again.
+ * The values are written into the element of the slot, so only the slots that
+ * really moved change and only those are drawn again.
  */
 const applyNpcSlotsMove = (payload: string) => {
   if (typeof payload !== 'string' || payload.length === 0) {
@@ -532,13 +519,9 @@ const applyNpcSlotsMove = (payload: string) => {
       continue;
     }
 
-    const x = Number(values[0]);
-    const y = Number(values[1]);
-    const scale = Number(values[2]);
-
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(scale)) {
-      continue;
-    }
+    const x = values[0];
+    const y = values[1];
+    const scale = values[2];
 
     setMarkerValues(slot, x, y, scale);
 
@@ -566,11 +549,18 @@ const applyStyleUpdate = (payload: string) => {
     return;
   }
 
-  document.documentElement.style.setProperty(BASE_FONT_SIZE_PROPERTY, String(update.baseFontSize));
+  document.documentElement.style.setProperty(
+    BASE_FONT_SIZE_PROPERTY,
+    String(update.baseFontSize),
+  );
 
   // The plugin owns the slots, so it announces how many of them the view has
   // to draw.
-  if (typeof update.slotCount === 'number' && Number.isInteger(update.slotCount) && update.slotCount > 0) {
+  if (
+    typeof update.slotCount === 'number' &&
+    Number.isInteger(update.slotCount) &&
+    update.slotCount > 0
+  ) {
     setSlotCount(update.slotCount);
   }
 };

@@ -99,19 +99,16 @@ scale of the font. The scale is written with two decimals. The plugin computes
 them, so the view only copies them into the stylesheet. Only the slots that
 really moved are part of a frame.
 
-The view writes every value of a marker into a global custom property of the
-document that is named after the number of its slot:
+The view writes every value of a marker into the element of its own slot:
 
 ```ts
-document.documentElement.style.setProperty('--npc-slot-3-x', '1042');
+element.style.setProperty('--npc-damage-x', '1042');
 ```
 
-The element of the slot only points at those properties, so the stylesheet
-resolves the values of the NPC that occupies the slot:
-
-```ts
-style="--npc-damage-x: var(--npc-slot-3-x, 0)"
-```
+The components register their elements in a map that is keyed by the number
+of the slot, so the plugin finds the element of a slot by the number it
+already knows and writes the values straight into it. The stylesheet resolves
+the values, so a frame only touches the slots that really moved.
 
 The plugin sends the positions in pixels, so the view reports the size of its
 viewport to the plugin:
@@ -152,11 +149,11 @@ elements of the slots are reused between the frames and only their position and
 their number are updated.
 
 The positions do not live in a Solid store: every value of a marker is written
-into a global custom property of the document that is named after the number of
-its slot (`--npc-slot-3-x`). The element of the slot only points at those
-properties, so the stylesheet resolves the value of the NPC that occupies the
-slot. A frame therefore only writes the properties of the slots that really
-moved, and the elements of the other slots are not touched at all. The id of an
-NPC arrives with the slot that it occupies and is kept in a store of their own,
-and the name of an NPC arrives on a channel of their own. Neither of them
-travels with the positions.
+into the element of its own slot (`--npc-damage-x`, `--npc-damage-y`,
+`--npc-damage-scale` and `--npc-damage-placed`). The components register their
+elements in a map that is keyed by the number of the slot, so the plugin finds
+the element of a slot by the number it already knows. A frame therefore only
+writes the styles of the slots that really moved, and the elements of the other
+slots are not touched at all. The id of an NPC arrives with the slot that it
+occupies and is kept in a store of their own, and the name of an NPC arrives on
+a channel of their own. Neither of them travels with the positions.

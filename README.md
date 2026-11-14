@@ -177,10 +177,11 @@ written point by point, a hit only redraws the number above that one head.
 The markers arrive at up to 60 times per second, so the view renders them with a
 keyed list: the elements of the slots are created once and are never
 re-created. The positions do not live in a store: every value of a marker is
-written into a global custom property of the document that is named after the
-number of its slot (`--npc-slot-3-x`). The element of the slot only points at
-those properties, so the stylesheet resolves the value of the NPC that occupies
-the slot. A frame therefore only writes the properties of the slots that really
+written into the element of its own slot (`--npc-damage-x`,
+`--npc-damage-y`, `--npc-damage-scale` and `--npc-damage-placed`). The
+components register their elements in a map that is keyed by the number of
+the slot, so the plugin finds the element of a slot by the number it already
+knows. A frame therefore only writes the styles of the slots that really
 moved, and the elements of the other slots are not touched at all. The number
 itself is recreated with every hit, which restarts the animation that makes it
 pop up.
