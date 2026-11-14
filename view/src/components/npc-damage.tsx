@@ -104,8 +104,8 @@ const NpcDamageSlot = (props: { index: number }) => {
     <div
       class="npc-damage"
       style={style()}
-      title={name()}
     >
+      <div class="w-fit text-center text-white">{name()}</div>
       <Damage id={id} />
     </div>
   );

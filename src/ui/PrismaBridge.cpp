@@ -28,6 +28,7 @@ namespace UI
 		/// positions and the names change even less often than the ids.
 		constexpr auto kNpcIdsFunction = "onNpcIdsUpdate";
 		constexpr auto kNpcNamesFunction = "onNpcNamesUpdate";
+		constexpr auto kNpcNamesClearFunction = "onNpcNamesClear";
 		constexpr auto kNpcMarkersFunction = "onNpcMarkersUpdate";
 
 		/// Name of the JavaScript entry point the view uses to report the size
@@ -427,110 +428,116 @@ namespace UI
 
 	void Bridge::SendNpcMarkers(const std::vector<Npc::Marker>& a_markers)
 	{
-		// The NPC channel is only used once the view announced itself: before
-		// that the view does not know the JavaScript function yet.
-		if (!_api || !_viewReady.load()) {
-			return;
-		}
+    if (!_api || !_viewReady.load(std::memory_order_acquire)) {
+        return;
+    }
 
-		std::lock_guard<std::mutex> lock(_npcMutex);
+    std::lock_guard<std::mutex> lock(_npcMutex);
 
-		// The positions are sent in pixels, so the view has to report the size
-		// of its viewport first. Nothing is sent before that: the view cannot
-		// place a marker without knowing where it is.
-		if (!_viewport.IsValid()) {
-			return;
-		}
+    if (!_viewport.IsValid()) {
+        return;
+    }
 
-		// The ids of the visible NPCs, in the order of the indexes that the
-		// frames of the positions use.
-		std::vector<Damage::ActorId> ids;
-		ids.reserve(a_markers.size());
+    // Очищаем буферы без освобождения выделенной памяти (capacity сохраняется)
+    _scratchIds.clear();
+    _scratchValues.clear();
+    _scratchChanged.clear();
 
-		for (const auto& marker : a_markers) {
-			ids.push_back(marker.id);
-		}
+    const std::size_t count = a_markers.size();
+    _scratchIds.reserve(count);
+    _scratchValues.reserve(count);
+    _scratchChanged.reserve(count);
 
-		// The names of the NPCs that the view does not know yet. A name never
-		// changes, so it is only sent when an NPC enters the screen.
-		std::unordered_set<Damage::ActorId> known(_npcIds.begin(), _npcIds.end());
-		JSON names = JSON::object();
+    // 1. Собираем ID и проверяем новые имена за один проход
+    JSON names = nullptr;
+    for (const auto& marker : a_markers) {
+        _scratchIds.push_back(marker.id);
 
-		for (const auto& marker : a_markers) {
-			if (known.count(marker.id) == 0) {
-				names[FormIdToString(marker.id)] = std::string(marker.name);
-			}
-		}
+				const bool isKnown = _knownNames.contains(marker.id);
+        // Имя отправляем только если вообще не видели этого NPC в текущей сессии
+        if (!isKnown) {
+            if (names.is_null()) {
+                names = JSON::object();
+            }
+            names[FormIdToString(marker.id)] = marker.name;
+						_knownNames.try_emplace(marker.id, marker.name);
+        }
+    }
 
-		// The order of the ids is part of the protocol: a frame addresses its
-		// markers by the index of the NPC in the list of the ids.
-		const bool idsChanged = ids != _npcIds;
+    const bool idsChanged = (_scratchIds != _npcIds);
 
-		// The positions are whole pixels, so a movement that is smaller than a
-		// pixel does not show up in the frame at all.
-		std::vector<Npc::ViewMarker> values;
-		values.reserve(a_markers.size());
+    // 2. Считаем экранные координаты и сразу ищем изменения (без создания nextFrame)
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& marker = a_markers[i];
+        auto viewMarker = Npc::BuildViewMarker(marker, _viewport);
+        _scratchValues.push_back(viewMarker);
 
-		for (const auto& marker : a_markers) {
-			values.push_back(Npc::BuildViewMarker(marker, _viewport));
-		}
+        if (idsChanged) {
+            _scratchChanged.push_back(i);
+            continue;
+        }
 
-		// The positions the view knows from now on.
-		std::unordered_map<Damage::ActorId, Npc::ViewMarker> nextFrame;
-		nextFrame.reserve(a_markers.size());
+        const auto it = _npcFrame.find(marker.id);
+        if (it == _npcFrame.end() || it->second != viewMarker) {
+            _scratchChanged.push_back(i);
+        }
+    }
 
-		for (std::size_t i = 0; i < a_markers.size(); ++i) {
-			nextFrame[a_markers[i].id] = values[i];
-		}
+    // 3. Отправка данных на фронт
+    if (!names.is_null()) {
+        JSON payload{
+            { "type", "npcNames" },
+            { "names", std::move(names) },
+        };
 
-		// Only the markers that really moved are sent. When the ids changed,
-		// the indexes of the frames shift, so the whole frame is sent again.
-		std::vector<std::size_t> changed;
+				logger::info("Send NPC names {}", payload.dump());
 
-		for (std::size_t i = 0; i < a_markers.size(); ++i) {
-			if (idsChanged) {
-				changed.push_back(i);
-				continue;
-			}
+        if (!Send(kNpcNamesFunction, payload.dump())) {
+            // Если отправка не удалась, откатываем кеш имен, чтобы попробовать в след. кадре
+            for (const auto& marker : a_markers) {
+                _knownNames.erase(marker.id);
+            }
+            return;
+        }
+    }
 
-			const auto it = _npcFrame.find(a_markers[i].id);
+    if (idsChanged) {
+				std::string npcIdsPayload = NpcIdsToJson(_scratchIds).dump();
 
-			if (it == _npcFrame.end() || it->second != values[i]) {
-				changed.push_back(i);
-			}
-		}
+				logger::info("Send NPC ids {}", npcIdsPayload);
 
-		// The names come first: the view looks them up by the id of the NPC.
-		if (!names.empty()) {
-			JSON payload{
-				{ "type", "npcNames" },
-				{ "names", names },
-			};
+        if (!Send(kNpcIdsFunction, npcIdsPayload)) {
+            return;
+        }
+        _npcIds = _scratchIds; // Копирует в уже выделенную память _npcIds
+    }
 
-			if (!Send(kNpcNamesFunction, payload.dump())) {
-				return;
-			}
-		}
+    if (_scratchChanged.empty()) {
+        return; // Ничего не сдвинулось, _npcFrame обновлять не нужно
+    }
 
-		if (idsChanged) {
-			if (!Send(kNpcIdsFunction, NpcIdsToJson(ids).dump())) {
-				return;
-			}
+    if (!Send(kNpcMarkersFunction, BuildFrame(_scratchValues, _scratchChanged))) {
+        return;
+    }
 
-			_npcIds = ids;
-		}
+    // 4. Обновляем _npcFrame на месте, без пересоздания хеш-таблицы
+    if (idsChanged) {
+        _npcFrame.clear();
+        for (std::size_t i = 0; i < count; ++i) {
+            _npcFrame.emplace(_scratchIds[i], _scratchValues[i]);
+        }
+    } else {
+        for (std::size_t idx : _scratchChanged) {
+            _npcFrame[_scratchIds[idx]] = _scratchValues[idx];
+        }
+    }
+	}
 
-		if (changed.empty()) {
-			// Nothing moved, so the view still shows the right positions.
-			_npcFrame = std::move(nextFrame);
-			return;
-		}
-
-		if (!Send(kNpcMarkersFunction, BuildFrame(values, changed))) {
-			return;
-		}
-
-		_npcFrame = std::move(nextFrame);
+	void Bridge::ResetNpcCache() {
+		_knownNames.clear();
+		_npcIds.clear();
+		_npcFrame.clear();
+		Send(kNpcNamesClearFunction, "");
 	}
 
 	bool Bridge::Send(const char* a_function, const std::string& a_payload)

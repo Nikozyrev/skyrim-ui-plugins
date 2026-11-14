@@ -85,6 +85,8 @@ namespace UI
 		/// view reported the size of its viewport.
 		void SendNpcMarkers(const std::vector<Npc::Marker>& a_markers);
 
+		void ResetNpcCache();
+
 	private:
 		Bridge() = default;
 
@@ -120,11 +122,18 @@ namespace UI
 		/// The ids of the visible NPCs that the view knows.
 		///
 		/// The ids are in the order of the indexes that the frames of the
-		/// positions use, so the order matters as well as the content.
+		/// positions use, so the order matters as well as the content.		
 		std::vector<Damage::ActorId> _npcIds;
 
 		/// The positions of the visible NPCs that the view knows.
-		std::unordered_map<Damage::ActorId, Npc::ViewMarker> _npcFrame;
+    std::unordered_map<Damage::ActorId, Npc::ViewMarker> _npcFrame;
+
+    std::unordered_map<Damage::ActorId, std::string> _knownNames; // Постоянный кеш имен
+
+    // Переиспользуемые буферы, чтобы не выделять память каждый кадр
+    std::vector<Damage::ActorId> _scratchIds;
+    std::vector<Npc::ViewMarker> _scratchValues;
+    std::vector<std::size_t> _scratchChanged;
 
 		/// The size of the viewport of the view, in pixels.
 		///

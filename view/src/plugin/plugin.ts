@@ -370,6 +370,10 @@ const applyNpcNamesUpdate = (payload: string) => {
   });
 };
 
+const applyNpcNamesClear = () => {
+  setNpcNames(reconcile({}));
+}
+
 /**
  * Applies the ids of the NPCs that are currently visible on the screen.
  *
@@ -403,12 +407,6 @@ const applyNpcIdsUpdate = (payload: string) => {
     if (!current.has(id)) {
       clearMarkerValues(id);
     }
-  }
-
-  // Every NPC left the screen, so the names of the NPCs that were visible are
-  // dropped as well.
-  if (ids.length === 0) {
-    setNpcNames(reconcile({}));
   }
 };
 
@@ -498,6 +496,7 @@ declare global {
 
     /** Called by the plugin when NPCs entered the screen. */
     onNpcNamesUpdate?: (payload: string) => void;
+    onNpcNamesClear?: (payload: string) => void;
 
     /** Called by the plugin for every update of the visible NPC heads. */
     onNpcMarkersUpdate?: (payload: string) => void;
@@ -569,6 +568,7 @@ export const initPluginOnWindow = () => {
   window.onDamageUpdate = applyUpdate;
   window.onNpcIdsUpdate = applyNpcIdsUpdate;
   window.onNpcNamesUpdate = applyNpcNamesUpdate;
+  window.onNpcNamesClear = applyNpcNamesClear;
   window.onNpcMarkersUpdate = applyNpcMarkersUpdate;
   window.onStyleUpdate = applyStyleUpdate;
 

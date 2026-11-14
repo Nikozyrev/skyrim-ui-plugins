@@ -95,6 +95,10 @@ namespace
 			Npc::Overlay::Get().Start();
 			break;
 
+		case SKSE::MessagingInterface::kPreLoadGame:
+			UI::Bridge::Get().ResetNpcCache();
+			break;
+
 		default:
 			break;
 		}
