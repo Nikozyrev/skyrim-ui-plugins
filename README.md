@@ -204,7 +204,7 @@ The damage payloads are always a JSON string, so they can never be
 interpreted as code. The frame of the head positions is a plain string of
 numbers, which is even cheaper: it is parsed by hand and never by `JSON.parse`.
 
-Five payload types exist:
+Five payload types exist, and the ids and the names have their own channels, so they are sent without a type of their own:
 
 ```jsonc
 // a single new hit
@@ -214,10 +214,10 @@ Five payload types exist:
 { "type": "snapshot", "actors": [ /* ... */ ], "events": [ /* ... */ ] }
 
 // the ids of the NPCs that are visible on the screen
-{ "type": "npcIds", "ids": [ "000ABCDE", "0000BEEF" ] }
+[ "000ABCDE", "0000BEEF" ]
 
 // the names of the NPCs that entered the screen, keyed by their id
-{ "type": "npcNames", "names": { "000ABCDE": "Bandit" } }
+{ "000ABCDE": "Bandit" }
 
 // the styles of the overlay
 { "type": "style", "baseFontSize": 11 }

@@ -164,6 +164,9 @@ namespace UI
 
 		/// The ids of the visible NPCs, in the order of the indexes that the
 		/// frames of the positions use.
+		///
+		/// The payload is a plain array of the form ids: the ids have their
+		/// own channel, so they do not need a type of their own.
 		JSON NpcIdsToJson(const std::vector<Damage::ActorId>& a_ids)
 		{
 			JSON ids = JSON::array();
@@ -172,10 +175,7 @@ namespace UI
 				ids.push_back(FormIdToString(id));
 			}
 
-			return JSON{
-				{ "type", "npcIds" },
-				{ "ids", ids },
-			};
+			return ids;
 		}
 
 		/// Builds a frame of the positions of the visible NPCs.
@@ -485,14 +485,9 @@ namespace UI
 
     // 3. Отправка данных на фронт
     if (!names.is_null()) {
-        JSON payload{
-            { "type", "npcNames" },
-            { "names", std::move(names) },
-        };
+        const auto payload = names.dump();
 
-				logger::info("Send NPC names {}", payload.dump());
-
-        if (!Send(kNpcNamesFunction, payload.dump())) {
+        if (!Send(kNpcNamesFunction, payload)) {
             // Если отправка не удалась, откатываем кеш имен, чтобы попробовать в след. кадре
             for (const auto& marker : a_markers) {
                 _knownNames.erase(marker.id);
@@ -503,8 +498,6 @@ namespace UI
 
     if (idsChanged) {
 				std::string npcIdsPayload = NpcIdsToJson(_scratchIds).dump();
-
-				logger::info("Send NPC ids {}", npcIdsPayload);
 
         if (!Send(kNpcIdsFunction, npcIdsPayload)) {
             return;

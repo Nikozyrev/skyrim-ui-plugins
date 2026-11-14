@@ -73,33 +73,26 @@ export type DamageUpdate = {
  * The plugin only sends this payload when the set of the visible NPCs
  * changed, so the ids are the stable key of the list of markers: the view
  * can reuse the elements it already drew.
+ *
+ * The payload is a plain array of the form ids: the ids have their own
+ * channel, so they do not need a type of their own.
+ *
+ * The order matters: the frames of the positions address their markers by
+ * the index of the NPC in this list.
  */
-export type NpcIdsUpdate = {
-  /** "npcIds" carries the ids of the NPCs that are visible on the screen. */
-  type: 'npcIds';
-
-  /**
-   * The form ids of the visible NPCs.
-   *
-   * The order matters: the frames of the positions address their markers by
-   * the index of the NPC in this list.
-   */
-  ids: string[];
-};
+export type NpcIdsUpdate = string[];
 
 /**
  * The names of the NPCs that are visible on the screen.
  *
  * The plugin only sends the names of the NPCs that entered the screen, in
  * their own message, so the names never travel with the positions.
+ *
+ * The payload is a plain record of the display names, keyed by the form id of
+ * their NPC: the names have their own channel, so they do not need a type of
+ * their own.
  */
-export type NpcNamesUpdate = {
-  /** "npcNames" carries the names of the NPCs that entered the screen. */
-  type: 'npcNames';
-
-  /** The display names of the NPCs, keyed by their form id. */
-  names: Record<string, string>;
-};
+export type NpcNamesUpdate = Record<string, string>;
 
 /**
  * The styles of the overlay.

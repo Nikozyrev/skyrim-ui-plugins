@@ -286,11 +286,15 @@ const parseNpcIdsUpdate = (payload: unknown): NpcIdsUpdate | null => {
   }
 
   try {
-    const parsed = JSON.parse(payload) as NpcIdsUpdate;
-    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npcIds') {
+    const parsed = JSON.parse(payload) as unknown;
+
+    if (!Array.isArray(parsed)) {
       return null;
     }
-    return parsed;
+
+    return parsed.filter(
+      (id): id is string => typeof id === 'string' && id.length > 0,
+    );
   } catch {
     // A malformed payload must never break the overlay.
     return null;
@@ -303,11 +307,21 @@ const parseNpcNamesUpdate = (payload: unknown): NpcNamesUpdate | null => {
   }
 
   try {
-    const parsed = JSON.parse(payload) as NpcNamesUpdate;
-    if (!parsed || typeof parsed !== 'object' || parsed.type !== 'npcNames') {
+    const parsed = JSON.parse(payload) as unknown;
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return null;
     }
-    return parsed;
+
+    const names: NpcNamesUpdate = {};
+
+    for (const [id, name] of Object.entries(parsed as Record<string, unknown>)) {
+      if (id && typeof name === 'string') {
+        names[id] = name;
+      }
+    }
+
+    return names;
   } catch {
     // A malformed payload must never break the overlay.
     return null;
@@ -348,17 +362,13 @@ const parseStyleUpdate = (payload: unknown): StyleUpdate | null => {
  * store of their own, keyed by the id of their NPC.
  */
 const applyNpcNamesUpdate = (payload: string) => {
-  const update = parseNpcNamesUpdate(payload);
-  if (!update) {
-    return;
-  }
-
-  if (!update.names || typeof update.names !== 'object') {
+  const names = parseNpcNamesUpdate(payload);
+  if (!names) {
     return;
   }
 
   batch(() => {
-    for (const [id, name] of Object.entries(update.names)) {
+    for (const [id, name] of Object.entries(names)) {
       if (!id || typeof name !== 'string') {
         continue;
       }
@@ -386,14 +396,10 @@ const applyNpcNamesClear = () => {
  * when the last NPC left the screen.
  */
 const applyNpcIdsUpdate = (payload: string) => {
-  const update = parseNpcIdsUpdate(payload);
-  if (!update) {
+  const ids = parseNpcIdsUpdate(payload);
+  if (!ids) {
     return;
   }
-
-  const ids = Array.isArray(update.ids)
-    ? update.ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
-    : [];
 
   const previous = new Set(npcOrder);
   const current = new Set(ids);

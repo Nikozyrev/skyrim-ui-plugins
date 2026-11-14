@@ -40,13 +40,14 @@ as code. The frame of the head positions is a plain string of numbers.
 | ------------ | ----------------------------------------------------------------------------------------- |
 | `event`      | `{ type: "event", actors: [...], event: {...} }` - a single new hit.                       |
 | `snapshot`   | `{ type: "snapshot", actors: [...], events: [...] }` - the full state.                      |
-| `npcIds`     | `{ type: "npcIds", ids: [...] }` - the NPCs that are visible on screen.                     |
-| `npcNames`   | `{ type: "npcNames", names: { ... } }` - the names of the NPCs that entered the screen.    |
+| `npcIds`     | `[ ... ]` - the form ids of the NPCs that are visible on screen, in order.               |
+| `npcNames`   | `{ ... }` - the names of the NPCs that entered the screen, keyed by their id.              |
 | `style`      | `{ type: "style", baseFontSize: 11 }` - the styles of the overlay.                          |
 
 `actors` holds the aggregated damage per character, `events` the recent hits,
 `ids` the visible NPCs and `names` their display names. See `src/plugin/types.ts`
-for the exact shape.
+for the exact shape. The ids and the names have their own channels, so their
+payloads are a plain array and a plain record without a type of their own.
 
 A frame carries the numbers above the heads and nothing else:
 
