@@ -118,19 +118,32 @@ game session. For every actor it
 * skips the player, creatures without an actor base, disabled actors, actors
   without a model and dead bodies (`kIncludeDeadNpcs` in `NpcTracker.cpp`
   turns the last one back on),
-* resolves the upper middle point of the NPC: the bound of the model is a
-  sphere around the whole body, so its center is the middle of the NPC and the
-  top of that sphere is the top of the body. The head bone of the skeleton is
-  not used anymore, because it follows every animation of the actor while the
-  bound of the model covers the whole body,
+* resolves the height of the NPC: `RE::Actor::GetHeight()` of the engine, which
+  caches it in the high process of the actor, and the height of the race of the
+  NPC as the fallback. The world units of the game are the units of the
+  creation kit, so a human is 128 units high (`kBaseBodyHeight` in
+  `NpcTracker.cpp`). The height is measured once per NPC and then kept, so it
+  never changes while the NPC is on the screen,
+* builds the point above the NPC from the root of its model and that height, so
+  a swing of a weapon or a crouch does not move the marker,
 * projects that point with `RE::NiCamera::WorldPtToScreenPt3` of the camera that
   renders the world (the world camera below the camera root of the player
   camera),
-* measures the size of the NPC with the very same projection: a probe point
+* measures the size of the head with the very same projection: a probe point
   one head radius above the point is projected as well, and the distance
   between both points is the radius of the head on the screen. The size of the
-  head itself is estimated from the bound of the model
-  (`kHeadToBodyRatio` in `NpcTracker.cpp`).
+  head itself is a part of the height of the NPC
+  (`kHeadRadiusPerHeight` in `NpcTracker.cpp`).
+
+The point of the marker does not depend on the model of the NPC at all. The
+bound of a model follows every animation of the actor: it grows when the NPC
+swings a weapon and it shrinks when it crouches, so a marker that is built
+from it jumps around and can even disappear while the NPC fights.
+
+Only the NPCs that are in sight are tracked: a ray is cast from the camera of
+the player to the chest of the NPC, and the NPC is skipped when the ray hits
+something else. A weapon or a shield of the NPC is a collidable of its own,
+so a hit on it counts as a hit on the NPC itself.
 
 The tracker stays **idle while no world is loaded**: in the main menu the
 scene graph of the world is torn down, so the camera and the actors are not

@@ -24,19 +24,37 @@ namespace Npc
 {
 	namespace
 	{
-		/// The head of a humanoid takes up roughly an eighth of the body
-		/// height. The bound of the actor covers the whole body, so the head
-		/// is a small fraction of it.
-		constexpr float kHeadToBodyRatio = 0.13f;
-
-		/// Fallback radius (in world units) for actors of an unknown size.
-		constexpr float kFallbackHeadRadius = 0.12f;
-
-		/// Fallback height (in world units) of an actor of an unknown size.
+		/// The height of a human NPC in world units.
 		///
-		/// It is the distance between the feet and the top of the head of a
-		/// human, so it is used when the bound of the model is not usable.
-		constexpr float kFallbackBodyHeight = 1.8f;
+		/// The world units of the game are the units of the creation kit:
+		/// 128 units are 1.828 metres, so a human is 128 units high. The
+		/// height of a race is a scale factor and not a length, so the
+		/// height of every other size is a multiple of this one.
+		constexpr float kBaseBodyHeight = 128.0f;
+
+		/// The radius of the head as a fraction of the height of the body.
+		///
+		/// The number of the damage is scaled with the size of the head of
+		/// the NPC, so it stays readable for every size of an actor.
+		constexpr float kHeadRadiusPerHeight = 0.08f;
+
+		/// The bounds of the height of an actor that are still plausible.
+		///
+		/// A height outside of them means that the engine did not measure
+		/// the actor, so the height of its race is used instead. The bounds
+		/// are in world units: 40 units are 0.57 metres and 400 units are
+		/// 5.7 metres.
+		constexpr float kMinBodyHeight = 40.0f;
+		constexpr float kMaxBodyHeight = 400.0f;
+
+		/// The distance between the position of an actor and the root of its
+		/// model that is still plausible, in world units.
+		///
+		/// The root of the model follows the actor while it walks, so it is
+		/// the better source for the point of the marker. It is only used
+		/// when it is close to the position of the actor though, so a model
+		/// that is not in the world cannot move the marker.
+		constexpr float kMaxRootDistance = 100.0f;
 
 		/// Heads smaller than this fraction of the screen height do
 		/// not get a marker: they would be a couple of pixels wide.
@@ -118,47 +136,54 @@ namespace Npc
 		/// The point of an actor that its marker is built around.
 		struct BodyPoint
 		{
-			/// The upper middle point of the actor: the top of the body in
-			/// the middle of the model.
+			/// The point above the actor: the feet of the actor plus the
+			/// height of its body.
 			RE::NiPoint3 position;
 
 			/// The radius of the head of the actor, in world units.
 			float radius = 0.0f;
 		};
 
-		/// Resolves the upper middle point of an actor.
+		/// The point between the feet of an actor.
 		///
-		/// The bound of the model is a sphere around the whole model, so its
-		/// center is the middle of the actor and the top of that sphere is
-		/// the top of the body.
+		/// The position of the actor is the point between its feet and the
+		/// root of its model follows the actor while it walks. The root is
+		/// only used when it is close to the position of the actor, so a
+		/// model that is not in the world cannot move the marker.
+		RE::NiPoint3 ResolveBase(RE::Actor* a_actor, RE::NiAVObject* a_model)
+		{
+			const RE::NiPoint3 position = a_actor->GetPosition();
+
+			if (!a_model) {
+				return position;
+			}
+
+			const RE::NiPoint3 root = a_model->world.translate;
+			const RE::NiPoint3 delta = root - position;
+
+			if (delta.SqrLength() > kMaxRootDistance * kMaxRootDistance) {
+				return position;
+			}
+
+			return root;
+		}
+
+		/// Resolves the point above an actor.
 		///
-		/// The head bone of the skeleton is not used anymore: it follows
-		/// every animation of the actor, while the bound of the model covers
-		/// the whole body and stays where the body is.
-		BodyPoint ResolveBodyPoint(RE::Actor* a_actor, RE::NiAVObject* a_model)
+		/// The point is built from the position and the height of the actor
+		/// and not from the model of the actor, so it does not follow the
+		/// animations of the NPC: a swing of a weapon or a crouch does not
+		/// move it and it never leaves the screen.
+		BodyPoint ResolveBodyPoint(RE::Actor* a_actor, RE::NiAVObject* a_model, float a_height)
 		{
 			BodyPoint result;
 
-			const auto& bound = a_model->worldBound;
-			const float radius = bound.radius;
+			result.position = ResolveBase(a_actor, a_model);
+			result.position.z += a_height;
 
-			if (radius > 0.05f && radius < 100.0f) {
-				result.position = bound.center;
-				result.position.z += radius;
-
-				// The size of the head is estimated from the bound of the
-				// model, because the bound of the model covers the whole
-				// body.
-				result.radius = radius * kHeadToBodyRatio;
-
-				return result;
-			}
-
-			// The bound of the model is not usable, so the actor is estimated
-			// from its own position, which is the point between its feet.
-			result.position = a_actor->GetPosition();
-			result.position.z += kFallbackBodyHeight;
-			result.radius = kFallbackHeadRadius;
+			// The size of the head is a part of the size of the body, so the
+			// number of the damage keeps its size for every NPC.
+			result.radius = a_height * kHeadRadiusPerHeight;
 
 			return result;
 		}
@@ -190,16 +215,16 @@ namespace Npc
 
 		/// Builds the marker of a single actor. Returns false when the actor
 		/// has no point that is visible on the screen.
-		bool BuildMarker(RE::Actor* a_actor, RE::NiCamera* a_camera, Marker& a_marker)
+		bool BuildMarker(RE::Actor* a_actor, RE::NiCamera* a_camera, float a_height, Marker& a_marker)
 		{
 			// Actors without a model have nothing to draw. The model is also
-			// the anchor for every following access.
+			// the anchor of the point of the marker.
 			auto* model = a_actor->Get3D();
 			if (!model) {
 				return false;
 			}
 
-			const BodyPoint body = ResolveBodyPoint(a_actor, model);
+			const BodyPoint body = ResolveBodyPoint(a_actor, model, a_height);
 
 			if (body.radius <= 0.0f) {
 				return false;
@@ -276,7 +301,7 @@ namespace Npc
 		}
 
 		/// True when the actor is an NPC that can carry a marker.
-		bool IsTrackable(RE::PlayerCharacter *player, RE::Actor* a_actor)
+		bool IsTrackable(RE::Actor* a_actor)
 		{
 			if (!a_actor) {
 				return false;
@@ -304,66 +329,74 @@ namespace Npc
 		}
 	}
 
-	bool HasClearLineOfSight(RE::Actor* a_target) 
+	bool HasClearLineOfSight(RE::Actor* a_target)
 	{
 		auto* player = RE::PlayerCharacter::GetSingleton();
 		auto* camera = RE::PlayerCamera::GetSingleton();
 		if (!player || !camera || !a_target) {
-				return false;
+			return false;
 		}
-
+	
 		auto* cell = player->GetParentCell();
 		if (!cell) {
-				return false;
+			return false;
 		}
-
+	
 		auto* havokWorld = cell->GetbhkWorld();
 		if (!havokWorld) {
-				return false;
+			return false;
 		}
-
+	
 		// 1. Начальная точка луча — позиция камеры игрока
 		RE::NiPoint3 startPos = camera->cameraRoot ? camera->cameraRoot->world.translate : player->GetLookingAtLocation();
-		
+	
 		// 2. Конечная точка луча — центр туловища или голова цели
+		// Высота берётся из трекера: она одна и та же для NPC и не зависит
+		// от его анимации, поэтому луч всегда целится в одно и то же место.
 		RE::NiPoint3 endPos = a_target->GetPosition();
-		endPos.z += a_target->GetHeight() * 0.95f; // Примерно уровень груди/шеи
-
+		endPos.z += Tracker::Get().ResolveHeight(a_target, a_target->GetFormID()) * 0.95f; // Примерно уровень груди/шеи
+	
 		RE::bhkPickData pickData;
-		
+	
 		// Переводим координаты из игровых единиц в масштаб Havok (1 игровой юнит = ~0.01428 в Havok)
 		const float havokScale = RE::bhkWorld::GetWorldScale();
 		pickData.rayInput.from = startPos * havokScale;
 		pickData.rayInput.to = endPos * havokScale;
-
+	
 		// Настраиваем фильтр коллизий: луч должен реагировать на статику (стены), ландшафт и акторов
 		// Коллизия от лица игрока, чтобы луч не застрял в собственной модели игрока
 		uint32_t collisionGroup = 0;
 		player->GetCollisionFilterInfo(collisionGroup);
 		// Устанавливаем слой L_LOS (Line of Sight = 13) или L_PROJECTILE (10)
 		pickData.rayInput.filterInfo = (collisionGroup & 0xFFFF0000) | static_cast<uint32_t>(RE::COL_LAYER::kLOS);
-
+	
 		// Пускаем луч в физическом мире
 		havokWorld->PickObject(pickData);
-
+	
 		// 3. Анализируем, во что уперся луч
 		if (pickData.rayOutput.HasHit()) {
-				// Получаем объект, в который попал луч
-				auto* hitRef = RE::TESHavokUtilities::FindCollidableRef(*pickData.rayOutput.rootCollidable);
-				
-				// Если луч попал именно в нашего целевого NPC — препятствий нет!
-				if (hitRef == a_target) {
-						return true;
-				}
-				
-				// Если hitRef == nullptr (стена, камень, ландшафт) или другой объект — цель за преградой
-				return false;
+			// Получаем объект, в который попал луч
+			auto* hitRef = RE::TESHavokUtilities::FindCollidableRef(*pickData.rayOutput.rootCollidable);
+
+			// Если луч попал именно в нашего целевого NPC — препятствий нет!
+			if (hitRef == a_target) {
+				return true;
+			}
+
+			// Оружие и щит NPC — это отдельные объекты, поэтому луч может попасть
+			// в них вместо самого NPC. Владелец такого объекта — это и есть NPC,
+			// значит перед ним ничего не стоит.
+			if (hitRef && hitRef->GetOwner() == a_target) {
+				return true;
+			}
+
+			// Если hitRef == nullptr (стена, камень, ландшафт) или другой объект — цель за преградой
+			return false;
 		}
 
 		// Если луч вообще ни во что не попал (например, пролетел мимо хитбокса NPC, но и стен не задел)
 		return true;
 	}
-
 
 	Tracker& Tracker::Get()
 	{
@@ -381,6 +414,38 @@ namespace Npc
 		// is read from the engine only once. The reference stays valid, the
 		// map only rehashes its buckets.
 		return _names.emplace(a_id, ActorUtil::SafeName(a_actor)).first->second;
+	}
+
+	float Tracker::ResolveHeight(RE::Actor* a_actor, Damage::ActorId a_id)
+	{
+		if (const auto it = _heights.find(a_id); it != _heights.end()) {
+			return it->second;
+		}
+
+		// The engine measures the height of an actor from the bound of its
+		// model, and that bound follows every animation of the NPC. The
+		// engine caches the height in the high process of the actor, so it
+		// stays the same while the actor is in the high process.
+		float height = a_actor->GetHeight();
+
+		// The height of the race of the NPC is a scale factor that never
+		// changes, so it is the fallback when the height of the engine is
+		// not usable.
+		float scale = 0.0f;
+
+		if (auto* npc = a_actor->GetActorBase(); npc) {
+			scale = npc->GetHeight();
+		}
+
+		if (!(height > kMinBodyHeight && height < kMaxBodyHeight)) {
+			height = scale > 0.0f ? scale * kBaseBodyHeight : kBaseBodyHeight;
+		}
+
+		// The height is kept for the whole session, so the point of the
+		// marker of an NPC never moves while the NPC is on the screen.
+		_heights.emplace(a_id, height);
+
+		return height;
 	}
 
 	void Tracker::Collect()
@@ -415,11 +480,15 @@ namespace Npc
 					try {
 							RE::Actor* a_actor = actor.get();
 
-							if (!IsTrackable(player, a_actor) || !HasClearLineOfSight(a_actor)) continue;
+							if (!IsTrackable(a_actor) || !HasClearLineOfSight(a_actor)) continue;
 
 							Marker marker;
 
-							if (BuildMarker(a_actor, camera, marker)) {
+							// The height of the actor is measured once and then kept, so the
+							// point of the marker does not follow the animations of the NPC.
+							const float height = ResolveHeight(a_actor, a_actor->GetFormID());
+
+							if (BuildMarker(a_actor, camera, height, marker)) {
 								// The name is read from the engine only when the NPC is
 								// seen for the first time.
 								marker.name = ResolveName(a_actor, marker.id);
