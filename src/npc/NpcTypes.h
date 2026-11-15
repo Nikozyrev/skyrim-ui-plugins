@@ -9,13 +9,17 @@
 
 namespace Npc
 {
-	/// The head of a single NPC, ready to be drawn by the view.
+	/// The marker of a single NPC, ready to be drawn by the view.
+	///
+	/// The marker sits on the upper middle point of the NPC, so the number of
+	/// the damage is drawn above the whole body of the NPC.
 	///
 	/// The coordinates are normalized to the viewport of the game:
 	///   * `x` - 0 is the left edge of the screen, 1 the right one;
 	///   * `y` - 0 is the bottom edge of the screen, 1 the top one;
-	///   * `radius` - the radius of the head circle as a fraction of the
-	///     height of the screen.
+	///   * `radius` - the radius of the head of the NPC as a fraction of the
+	///     height of the screen. It is the size of the NPC on the screen, so
+	///     it follows the distance to the camera.
 	///
 	/// Normalized values are used on purpose: the tracker does not know the
 	/// size of the viewport of the view, so the bridge turns them into pixels
@@ -90,10 +94,11 @@ namespace Npc
 		bool operator==(const ViewMarker&) const = default;
 	};
 
-	/// Builds the number above the head of an NPC for a viewport of a size.
+	/// Builds the number above the marker point of an NPC for a viewport of a
+	/// size.
 	///
-	/// The number is placed right above the head, so its offset is shifted up
-	/// by the radius of the head and its lower edge touches the head. The size
+	/// The number is placed right above the point, so its offset is shifted up
+	/// by the radius of the head and its lower edge touches the point. The size
 	/// of the font follows that radius: a number of an NPC that is far away
 	/// stays small, but it never becomes unreadable. It is sent as the scale
 	/// of the base size of the stylesheet.

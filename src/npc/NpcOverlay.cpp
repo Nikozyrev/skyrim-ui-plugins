@@ -105,10 +105,10 @@ namespace Npc
 			}
 		}
 		catch (const std::exception& a_error) {
-			logger::error("NPC overlay: failed to refresh the head markers: {}", a_error.what());
+			logger::error("NPC overlay: failed to refresh the NPC markers: {}", a_error.what());
 		}
 		catch (...) {
-			logger::error("NPC overlay: failed to refresh the head markers (unknown error).");
+			logger::error("NPC overlay: failed to refresh the NPC markers (unknown error).");
 		}
 	}
 }

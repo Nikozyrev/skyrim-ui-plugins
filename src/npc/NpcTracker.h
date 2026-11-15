@@ -13,7 +13,8 @@ namespace RE
 
 namespace Npc
 {
-	/// Collects the heads of every NPC that is currently visible on the screen.
+	/// Collects the upper middle point of every NPC that is currently visible
+	/// on the screen.
 	///
 	/// The tracker has to run on the game thread: it reads the scene graph
 	/// and the camera of the engine, which are only valid there.
@@ -22,7 +23,7 @@ namespace Npc
 	public:
 		static Tracker& Get();
 
-		/// Gathers the heads of all visible NPCs. Never throws.
+		/// Gathers the markers of all visible NPCs. Never throws.
 		void Collect();
 
 		/// The markers of the last collection.

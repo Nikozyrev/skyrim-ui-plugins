@@ -4,7 +4,6 @@
 #include "util/GameState.h"
 
 #include <RE/B/BSContainer.h>
-#include <RE/F/FixedStrings.h>
 #include <RE/M/Main.h>
 #include <RE/N/NiAVObject.h>
 #include <RE/N/NiCamera.h>
@@ -12,6 +11,10 @@
 #include <RE/N/NiRTTI.h>
 #include <RE/P/PlayerCamera.h>
 #include <RE/P/ProcessLists.h>
+
+#include "RE/B/bhkPickData.h"
+#include "RE/B/bhkWorld.h"
+#include "RE/T/TESObjectCELL.h"
 
 #include <cmath>
 #include <exception>
@@ -28,6 +31,12 @@ namespace Npc
 
 		/// Fallback radius (in world units) for actors of an unknown size.
 		constexpr float kFallbackHeadRadius = 0.12f;
+
+		/// Fallback height (in world units) of an actor of an unknown size.
+		///
+		/// It is the distance between the feet and the top of the head of a
+		/// human, so it is used when the bound of the model is not usable.
+		constexpr float kFallbackBodyHeight = 1.8f;
 
 		/// Heads smaller than this fraction of the screen height do
 		/// not get a marker: they would be a couple of pixels wide.
@@ -64,8 +73,8 @@ namespace Npc
 			g_hasWorld = a_hasWorld;
 
 			logger::info("NPC tracker: {}.",
-						 a_hasWorld ? "a world is loaded, the head markers are active"
-									: "no world is loaded, the head markers are idle");
+						 a_hasWorld ? "a world is loaded, the NPC markers are active"
+									: "no world is loaded, the NPC markers are idle");
 		}
 
 		/// True when the camera carries a usable projection.
@@ -106,44 +115,52 @@ namespace Npc
 			return nullptr;
 		}
 
-		/// The node that carries the head of an actor.
+		/// The point of an actor that its marker is built around.
+		struct BodyPoint
+		{
+			/// The upper middle point of the actor: the top of the body in
+			/// the middle of the model.
+			RE::NiPoint3 position;
+
+			/// The radius of the head of the actor, in world units.
+			float radius = 0.0f;
+		};
+
+		/// Resolves the upper middle point of an actor.
 		///
-		/// The head bone of the humanoid skeleton is used on purpose: it is
-		/// part of the model that is loaded anyway, while the face part of
-		/// the NPC would make the engine touch the first person model.
-		RE::NiAVObject* ResolveHead(RE::NiAVObject* a_model, const RE::BSFixedString& a_headName)
+		/// The bound of the model is a sphere around the whole model, so its
+		/// center is the middle of the actor and the top of that sphere is
+		/// the top of the body.
+		///
+		/// The head bone of the skeleton is not used anymore: it follows
+		/// every animation of the actor, while the bound of the model covers
+		/// the whole body and stays where the body is.
+		BodyPoint ResolveBodyPoint(RE::Actor* a_actor, RE::NiAVObject* a_model)
 		{
-			if (a_headName.empty()) {
-				return nullptr;
+			BodyPoint result;
+
+			const auto& bound = a_model->worldBound;
+			const float radius = bound.radius;
+
+			if (radius > 0.05f && radius < 100.0f) {
+				result.position = bound.center;
+				result.position.z += radius;
+
+				// The size of the head is estimated from the bound of the
+				// model, because the bound of the model covers the whole
+				// body.
+				result.radius = radius * kHeadToBodyRatio;
+
+				return result;
 			}
 
-			return a_model->GetObjectByName(a_headName);
-		}
+			// The bound of the model is not usable, so the actor is estimated
+			// from its own position, which is the point between its feet.
+			result.position = a_actor->GetPosition();
+			result.position.z += kFallbackBodyHeight;
+			result.radius = kFallbackHeadRadius;
 
-		/// The radius of the head in world units.
-		float ResolveHeadRadius(const RE::NiAVObject* a_model, const RE::NiAVObject* a_head)
-		{
-			// The bound of the head node is the most accurate source, but it
-			// is only filled in for the meshes and not for the bones.
-			if (a_head) {
-				const float radius = a_head->worldBound.radius;
-
-				if (radius > 0.02f && radius < 10.0f) {
-					return radius;
-				}
-			}
-
-			// Otherwise the head is estimated from the bound of the model,
-			// which covers the whole body.
-			if (a_model) {
-				const float radius = a_model->worldBound.radius;
-
-				if (radius > 0.05f && radius < 100.0f) {
-					return radius * kHeadToBodyRatio;
-				}
-			}
-
-			return kFallbackHeadRadius;
+			return result;
 		}
 
 		/// Projects a world position into the normalized viewport of the game.
@@ -172,9 +189,8 @@ namespace Npc
 		}
 
 		/// Builds the marker of a single actor. Returns false when the actor
-		/// has no head that is visible on the screen.
-		bool BuildMarker(RE::Actor* a_actor, RE::NiCamera* a_camera, const RE::BSFixedString& a_headName,
-						 Marker& a_marker)
+		/// has no point that is visible on the screen.
+		bool BuildMarker(RE::Actor* a_actor, RE::NiCamera* a_camera, Marker& a_marker)
 		{
 			// Actors without a model have nothing to draw. The model is also
 			// the anchor for every following access.
@@ -183,42 +199,26 @@ namespace Npc
 				return false;
 			}
 
-			auto* head = ResolveHead(model, a_headName);
+			const BodyPoint body = ResolveBodyPoint(a_actor, model);
 
-			RE::NiPoint3 headPosition;
-			float headRadius = 0.0f;
-
-			if (head) {
-				headPosition = head->world.translate;
-				headRadius = ResolveHeadRadius(model, head);
-			}
-			else {
-				// Without a head node the head is estimated above the feet of
-				// the actor.
-				const float bodyRadius = model->worldBound.radius;
-				headPosition = a_actor->GetPosition();
-				headPosition.z += bodyRadius * 1.8f;
-				headRadius = ResolveHeadRadius(model, nullptr);
-			}
-
-			if (headRadius <= 0.0f) {
+			if (body.radius <= 0.0f) {
 				return false;
 			}
 
 			float x = 0.0f;
 			float y = 0.0f;
 
-			if (!ProjectToScreen(a_camera, headPosition, x, y)) {
+			if (!ProjectToScreen(a_camera, body.position, x, y)) {
 				return false;
 			}
 
 			// The size of the head on the screen is measured with the very
-			// same projection: a probe point one head radius above the head
-			// is projected as well and the distance between both points is
-			// the radius of the head in screen fractions.
+			// same projection: a probe point one head radius above the point
+			// of the body is projected as well and the distance between both
+			// points is the radius of the head in screen fractions.
 			const auto cameraPosition = a_camera->world.translate;
 
-			RE::NiPoint3 forward = headPosition - cameraPosition;
+			RE::NiPoint3 forward = body.position - cameraPosition;
 			const float distance = forward.Length();
 
 			if (distance < 1e-4f) {
@@ -249,7 +249,7 @@ namespace Npc
 			float probeX = 0.0f;
 			float probeY = 0.0f;
 
-			if (!ProjectToScreen(a_camera, headPosition + up * headRadius, probeX, probeY)) {
+			if (!ProjectToScreen(a_camera, body.position + up * body.radius, probeX, probeY)) {
 				return false;
 			}
 
@@ -275,8 +275,8 @@ namespace Npc
 			return true;
 		}
 
-		/// True when the actor is an NPC that can carry a head marker.
-		bool IsTrackable(RE::Actor* a_actor)
+		/// True when the actor is an NPC that can carry a marker.
+		bool IsTrackable(RE::PlayerCharacter *player, RE::Actor* a_actor)
 		{
 			if (!a_actor) {
 				return false;
@@ -303,6 +303,67 @@ namespace Npc
 			return true;
 		}
 	}
+
+	bool HasClearLineOfSight(RE::Actor* a_target) 
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* camera = RE::PlayerCamera::GetSingleton();
+		if (!player || !camera || !a_target) {
+				return false;
+		}
+
+		auto* cell = player->GetParentCell();
+		if (!cell) {
+				return false;
+		}
+
+		auto* havokWorld = cell->GetbhkWorld();
+		if (!havokWorld) {
+				return false;
+		}
+
+		// 1. Начальная точка луча — позиция камеры игрока
+		RE::NiPoint3 startPos = camera->cameraRoot ? camera->cameraRoot->world.translate : player->GetLookingAtLocation();
+		
+		// 2. Конечная точка луча — центр туловища или голова цели
+		RE::NiPoint3 endPos = a_target->GetPosition();
+		endPos.z += a_target->GetHeight() * 0.95f; // Примерно уровень груди/шеи
+
+		RE::bhkPickData pickData;
+		
+		// Переводим координаты из игровых единиц в масштаб Havok (1 игровой юнит = ~0.01428 в Havok)
+		const float havokScale = RE::bhkWorld::GetWorldScale();
+		pickData.rayInput.from = startPos * havokScale;
+		pickData.rayInput.to = endPos * havokScale;
+
+		// Настраиваем фильтр коллизий: луч должен реагировать на статику (стены), ландшафт и акторов
+		// Коллизия от лица игрока, чтобы луч не застрял в собственной модели игрока
+		uint32_t collisionGroup = 0;
+		player->GetCollisionFilterInfo(collisionGroup);
+		// Устанавливаем слой L_LOS (Line of Sight = 13) или L_PROJECTILE (10)
+		pickData.rayInput.filterInfo = (collisionGroup & 0xFFFF0000) | static_cast<uint32_t>(RE::COL_LAYER::kLOS);
+
+		// Пускаем луч в физическом мире
+		havokWorld->PickObject(pickData);
+
+		// 3. Анализируем, во что уперся луч
+		if (pickData.rayOutput.HasHit()) {
+				// Получаем объект, в который попал луч
+				auto* hitRef = RE::TESHavokUtilities::FindCollidableRef(*pickData.rayOutput.rootCollidable);
+				
+				// Если луч попал именно в нашего целевого NPC — препятствий нет!
+				if (hitRef == a_target) {
+						return true;
+				}
+				
+				// Если hitRef == nullptr (стена, камень, ландшафт) или другой объект — цель за преградой
+				return false;
+		}
+
+		// Если луч вообще ни во что не попал (например, пролетел мимо хитбокса NPC, но и стен не задел)
+		return true;
+	}
+
 
 	Tracker& Tracker::Get()
 	{
@@ -339,47 +400,42 @@ namespace Npc
 
 			ReportState(true);
 
+			auto* player = RE::PlayerCharacter::GetSingleton();
 			auto* camera = ResolveCamera();
 			auto* processLists = RE::ProcessLists::GetSingleton();
 
-			if (!camera || !processLists) {
+			if (!player || !camera || !processLists) {
 				return;
-			}
-
-			// The name of the head bone is looked up once per collection.
-			RE::BSFixedString headName;
-			if (const auto* fixedStrings = RE::FixedStrings::GetSingleton(); fixedStrings) {
-				headName = fixedStrings->npcHead;
 			}
 
 			std::unordered_set<Damage::ActorId> visible;
 
-			processLists->ForAllActors([&](RE::Actor* a_actor) -> RE::BSContainer::ForEachResult {
-				try {
-					if (!IsTrackable(a_actor)) {
-						return RE::BSContainer::ForEachResult::kContinue;
-					}
+			for (auto& actorHandle : processLists->highActorHandles) {
+        if (auto actor = actorHandle.get()) {
+					try {
+							RE::Actor* a_actor = actor.get();
 
-					Marker marker;
+							if (!IsTrackable(player, a_actor) || !HasClearLineOfSight(a_actor)) continue;
 
-					if (BuildMarker(a_actor, camera, headName, marker)) {
-						// The name is read from the engine only when the NPC is
-						// seen for the first time.
-						marker.name = ResolveName(a_actor, marker.id);
-						visible.insert(marker.id);
+							Marker marker;
 
-						_markers.push_back(std::move(marker));
-					}
-				}
-				catch (const std::exception& a_error) {
-					logger::error("NPC tracker: failed to read an actor: {}", a_error.what());
-				}
-				catch (...) {
-					logger::error("NPC tracker: failed to read an actor (unknown error).");
-				}
+							if (BuildMarker(a_actor, camera, marker)) {
+								// The name is read from the engine only when the NPC is
+								// seen for the first time.
+								marker.name = ResolveName(a_actor, marker.id);
+								visible.insert(marker.id);
 
-				return RE::BSContainer::ForEachResult::kContinue;
-			});
+								_markers.push_back(std::move(marker));
+							}
+						}
+						catch (const std::exception& a_error) {
+							logger::error("NPC tracker: failed to read an actor: {}", a_error.what());
+						}
+						catch (...) {
+							logger::error("NPC tracker: failed to read an actor (unknown error).");
+						}
+        }
+    	}
 
 			// The names of the NPCs that left the screen are dropped, so the
 			// cache does not grow over the session.

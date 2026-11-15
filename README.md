@@ -97,10 +97,10 @@ read the same way:
 | `poison`   | `#4cd964`  |
 | `magic`    | `#c7b8e8`  |
 
-### NPC head markers
+### NPC markers
 
 The plugin tracks every NPC that is visible on the screen and draws the damage
-that NPC received right above its head.
+that NPC received right above it.
 
 ```
 Skyrim ──► RE::ProcessLists::ForAllActors ──► Npc::Tracker
@@ -118,23 +118,28 @@ game session. For every actor it
 * skips the player, creatures without an actor base, disabled actors, actors
   without a model and dead bodies (`kIncludeDeadNpcs` in `NpcTracker.cpp`
   turns the last one back on),
-* resolves the head: the head bone of the humanoid skeleton
-  (`NPCHead[Head]`) inside the model of the actor,
-* projects the head with `RE::NiCamera::WorldPtToScreenPt3` of the camera that
+* resolves the upper middle point of the NPC: the bound of the model is a
+  sphere around the whole body, so its center is the middle of the NPC and the
+  top of that sphere is the top of the body. The head bone of the skeleton is
+  not used anymore, because it follows every animation of the actor while the
+  bound of the model covers the whole body,
+* projects that point with `RE::NiCamera::WorldPtToScreenPt3` of the camera that
   renders the world (the world camera below the camera root of the player
   camera),
-* measures the size of the head with the very same projection: a probe point
-  one head radius above the head is projected as well, and the distance
-  between both points is the radius of the head on the screen.
+* measures the size of the NPC with the very same projection: a probe point
+  one head radius above the point is projected as well, and the distance
+  between both points is the radius of the head on the screen. The size of the
+  head itself is estimated from the bound of the model
+  (`kHeadToBodyRatio` in `NpcTracker.cpp`).
 
 The tracker stays **idle while no world is loaded**: in the main menu the
 scene graph of the world is torn down, so the camera and the actors are not
 valid there. The view keeps showing the damage overlay in the main menu and
-only the head markers are switched off.
+only the NPC markers are switched off.
 
 The tracker works with the viewport of the game normalized, because it does not
 know the size of the window of the overlay. The bridge turns the result into
-the plain CSS values of the number above the head and rounds them to whole
+the plain CSS values of the number above the NPC and rounds them to whole
 pixels:
 
 | Field   | Meaning                                                       |
@@ -143,9 +148,9 @@ pixels:
 | `y`     | the vertical offset of the number, in pixels                   |
 | `scale` | the scale of the font of the number                            |
 
-The number is placed right above the head, so the vertical offset is shifted
-up by the radius of the head, and the size of the font follows that radius: a
-number of an NPC that is far away stays small, but it never becomes
+The number is placed right above the tracked point, so the vertical offset is
+shifted up by the radius of the head, and the size of the font follows that
+radius: a number of an NPC that is far away stays small, but it never becomes
 unreadable. The size is sent as the scale of the base size of the stylesheet,
 so the view only copies these values into the stylesheet and does not compute
 anything on its own.
@@ -161,7 +166,7 @@ first frame, so nothing is sent before the view reported it. A movement that
 is smaller than a pixel does not change the value at all, so it does not even
 show up in a frame.
 
-### Damage above the heads
+### Damage above the NPCs
 
 The id of a marker and the `targetId` of a damage event are the same form id in
 the same `%08X` notation, so the view can look the damage of a marker up
@@ -172,7 +177,7 @@ event adds its amount to the entry of its target, and the kind of the most
 recent hit colours the number. A snapshot rebuilds the store from the
 aggregates of the plugin, so the damage is not counted twice and the overlay
 starts from a correct state after a save was loaded. Because the store is
-written point by point, a hit only redraws the number above that one head.
+written point by point, a hit only redraws the number above that one NPC.
 
 The markers arrive at up to 60 times per second, so the view renders them with a
 keyed list: the elements of the slots are created once and are never
@@ -216,7 +221,7 @@ window.onStyleUpdate(JSON.stringify(payload));
 ```
 
 The damage payloads are always a JSON string, so they can never be
-interpreted as code. The frames of the head overlay are plain strings of
+interpreted as code. The frames of the NPC overlay are plain strings of
 numbers, which are even cheaper: they are parsed by hand and never by
 `JSON.parse`.
 
@@ -273,7 +278,7 @@ view sets the value as the global custom property
 up. The payload also carries the number of the slots, so the view knows how
 many elements it has to draw.
 
-A frame carries the numbers above the heads:
+A frame carries the numbers above the NPCs:
 
 ```
 3:1042,215,1.18;7:987,230,1.00
@@ -306,7 +311,7 @@ function of the listener only when the page finished loading, so the first
 report can be lost.
 
 The view draws the damage number of a marker with a single CSS transform that
-carries both the position and the offset above the head:
+carries both the position and the offset above the NPC:
 
 ```css
 transform: translate(960px, 540px) translate(-50%, -100%);
@@ -363,7 +368,7 @@ Because of that, the plugin does not depend on the messaging interface:
 The view is created as soon as a world is loaded, and not before. Two reasons:
 
 * in the main menu the world is torn down, so the camera and the actors of the
-  world are not valid and the head markers would read freed memory;
+  world are not valid and the NPC markers would read freed memory;
 * a PrismaUI view covers the whole screen. Over the main menu it swallows the
   input: the game keeps running, but the menu stops reacting to the mouse and
   the keyboard.
@@ -444,8 +449,8 @@ src/
     DamageHook.h/.cpp    Actor::HandleHealthDamage and effect hooks
     DamageClassifier.h/.cpp element of a damage application
   npc/
-    NpcTypes.h           head marker of a single NPC
-    NpcTracker.h/.cpp    collects the visible NPC heads
+    NpcTypes.h           marker of a single NPC
+    NpcTracker.h/.cpp    collects the visible NPC markers
     NpcSlots.h/.cpp      pool of the slots of the overlay
     NpcOverlay.h/.cpp    game thread task that refreshes the markers
   ui/
@@ -471,7 +476,7 @@ deploy.mjs               builds and deploys the plugin and the view
 | The log says PrismaUI was not found            | `PrismaUI.dll` is not installed or not loaded before the game starts. |
 | No damage is recorded                          | The hook could not be installed. Check `Documents/My Games/Skyrim Special Edition/SKSE/skse64.log` for `Damage hook` messages. |
 | The overlay does not show up                   | The view is created only while a world is loaded. Check the log for `NPC tracker` and `PrismaUI view` messages. |
-| No numbers are drawn above the NPCs            | The camera could not be resolved or the actors have no head. Check the log for `NPC overlay` messages. |
+| No numbers are drawn above the NPCs            | The camera could not be resolved or the actors have no usable model bound. Check the log for `NPC overlay` messages. |
 | The overlay stays empty after loading a save   | Expected: the statistics are reset when a save is loaded.              |
 
 ## Credits
