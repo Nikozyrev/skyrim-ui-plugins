@@ -366,11 +366,15 @@ namespace Npc
 	
 		// Настраиваем фильтр коллизий: луч должен реагировать на статику (стены), ландшафт и акторов
 		// Коллизия от лица игрока, чтобы луч не застрял в собственной модели игрока
-		uint32_t collisionGroup = 0;
-		player->GetCollisionFilterInfo(collisionGroup);
-		// Устанавливаем слой L_LOS (Line of Sight = 13) или L_PROJECTILE (10)
-		pickData.rayInput.filterInfo = (collisionGroup & 0xFFFF0000) | static_cast<uint32_t>(RE::COL_LAYER::kLOS);
-	
+		// CommonLib отдаёт фильтр как RE::CFilter, поэтому собираем нужную маску вручную:
+		// сохраняем старшие 16 бит (группа), а слой перебиваем на L_LOS (Line of Sight).
+		RE::CFilter playerFilter;
+		player->GetCollisionFilterInfo(playerFilter);
+		RE::CFilter losFilter;
+		losFilter.filter = (playerFilter.filter & 0xFFFF0000u) | static_cast<std::uint32_t>(RE::COL_LAYER::kLOS);
+		// Устанавливаем слой L_LOS (Line of Sight) или L_PROJECTILE
+		pickData.rayInput.filterInfo = losFilter;
+
 		// Пускаем луч в физическом мире
 		havokWorld->PickObject(pickData);
 	
@@ -481,7 +485,13 @@ namespace Npc
 					try {
 							RE::Actor* a_actor = actor.get();
 
-							if (!IsTrackable(a_actor) || !HasClearLineOfSight(a_actor)) continue;
+							if (!IsTrackable(a_actor)) {
+								continue;
+							}
+
+							if (!HasClearLineOfSight(a_actor)) {
+								continue;
+							}
 
 							Marker marker;
 

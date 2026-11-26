@@ -24,36 +24,54 @@ namespace Npc
 		return singleton;
 	}
 
-	void Overlay::InstallHook()
+	bool Overlay::Install()
 	{
-		// Выделяем память для трамплина (14 байт достаточно для одного write_call<5>)
-		SKSE::AllocTrampoline(14);
+		const auto version = REL::Module::get().version();
 
-		// Смещения для SE (35565 + 0x748) и AE (36564 + 0xC26)
-		// В CommonLibSSE-NG можно использовать REL::VariantOffset
-		REL::Relocation<std::uintptr_t> target{
-			REL::RelocationID(35565, 36564),
-			REL::VariantOffset(0x748, 0xC26, 0x7EE)
-		};
+		// The place of the call that the hook replaces is different in every
+		// version of the game: the engine moves the code around, so the offset
+		// of the call inside the function is not stable. The id of the
+		// function is stable, so the function is taken from the address
+		// library and the offset is picked by the version of the game.
+		std::uintptr_t site = 0;
 
-		auto& trampoline = SKSE::GetTrampoline();
-		MainUpdateHook::_original = trampoline.write_call<5>(target.address(), MainUpdateHook::Thunk);
+		if (version >= REL::Version(1, 7, 99, 0)) {
+			// AE 1.7.104: the engine was rebuilt, the update of the frame
+			// (36564) is now called from the function 36544.
+			site = REL::RelocationID(35545, 36544).address() + 0x160;
+		}
+		else if (version >= REL::Version(1, 6, 0, 0)) {
+			// AE 1.6: the hook sits inside the update of the frame (36564).
+			site = REL::RelocationID(35565, 36564).address() + 0xC26;
+		}
+		else {
+			// SE 1.5: the hook sits inside the update of the frame (35565).
+			site = REL::RelocationID(35565, 36564).address() + 0x748;
+		}
 
-		logger::info("NPC overlay: MainUpdate hook installed.");
+		return InstallFrameHook<0>(site);
 	}
 
-	void Overlay::MainUpdateHook::Thunk()
+	template <std::size_t I>
+	bool Overlay::InstallFrameHook(std::uintptr_t a_site)
 	{
-		// 1. Сначала даем игре полностью обновить кадр, физику и камеру
-		_original();
+		auto& trampoline = SKSE::GetTrampoline();
 
-		// 2. Затем обновляем наш оверлей
-		Overlay::Get().Tick();
+		// The hook replaces the call of the game with a call of our thunk. The
+		// trampoline gives back the function that the game called there, so
+		// the thunk can call it with the same arguments and give its result
+		// back to the game.
+		FrameHook<I>::Original = trampoline.write_call<5>(a_site, FrameHook<I>::Thunk);
+
+		logger::info("NPC overlay: the frame update hook is installed.");
+
+		return true;
 	}
 
 	void Overlay::Start()
 	{
 		_running.store(true);
+
 		logger::info("NPC overlay started.");
 	}
 
@@ -61,6 +79,23 @@ namespace Npc
 	{
 		_running.store(false);
 		logger::info("NPC overlay stopped.");
+	}
+
+	void Overlay::OnFrame()
+	{
+		if (!_running.load()) {
+			return;
+		}
+
+		try {
+			Tick();
+		}
+		catch (const std::exception& a_error) {
+			logger::error("NPC overlay: the overlay tick threw: {}", a_error.what());
+		}
+		catch (...) {
+			logger::error("NPC overlay: the overlay tick threw an unknown error.");
+		}
 	}
 
 	void Overlay::Tick()

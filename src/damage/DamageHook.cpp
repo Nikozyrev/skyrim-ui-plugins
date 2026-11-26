@@ -138,23 +138,37 @@ namespace Damage
 		{
 			using Thunk_t = void(RE::Actor*, RE::Actor*, float);
 
+			/// The name of the hooked class, taken from the installation.
+			static inline const char* s_className = "unknown";
+
 			static void Thunk(RE::Actor* a_self, RE::Actor* a_attacker, float a_damage)
 			{
-				// `a_damage` is negative when the target loses health and positive
-				// when it is healed. Only the negative branch is a damage event.
-				//
-				// The data is captured *before* the original runs: the original may
-				// destroy the target (death), which would make a later access a
-				// use-after-free.
-				if (!g_capturing && a_self && a_damage < 0.0f) {
-					const CaptureGuard guard;
+				// Every entry into a hooked game function is written to the log:
+				// the last line before the crash points at the broken place.
 
-					// The health of the NPC is taken off at the very moment it
-					// takes the hit, so the bar above its head reacts to the
-					// damage right away.
-					Npc::HealthTracker::Get().ApplyDamage(a_self, -a_damage);
+				try {
+					// `a_damage` is negative when the target loses health and positive
+					// when it is healed. Only the negative branch is a damage event.
+					//
+					// The data is captured *before* the original runs: the original may
+					// destroy the target (death), which would make a later access a
+					// use-after-free.
+					if (!g_capturing && a_self && a_damage < 0.0f) {
+						const CaptureGuard guard;
 
-					Capture(a_self, a_attacker, -a_damage);
+						// The health of the NPC is taken off at the very moment it
+						// takes the hit, so the bar above its head reacts to the
+						// damage right away.
+						Npc::HealthTracker::Get().ApplyDamage(a_self, -a_damage);
+
+						Capture(a_self, a_attacker, -a_damage);
+					}
+				}
+				catch (const std::exception& a_error) {
+					logger::error("Damage hook ({}): {}", s_className, a_error.what());
+				}
+				catch (...) {
+					logger::error("Damage hook ({}): unknown error.", s_className);
 				}
 
 				Original(a_self, a_attacker, a_damage);
@@ -164,6 +178,8 @@ namespace Damage
 
 			static bool Install(std::size_t a_slot, const char* a_className)
 			{
+				s_className = a_className;
+
 				REL::Relocation<std::uintptr_t> vtable{ TActor::VTABLE[0] };
 
 				if (!vtable.address()) {
@@ -196,27 +212,43 @@ namespace Damage
 		{
 			using Thunk_t = void(RE::ValueModifierEffect*, RE::Actor*, float, RE::ActorValue);
 
+			/// The name of the hooked class, taken from the installation.
+			static inline const char* s_className = "unknown";
+
 			static void Thunk(RE::ValueModifierEffect* a_this, RE::Actor* a_actor, float a_value, RE::ActorValue a_actorValue)
 			{
-				// Effects nest (a counter effect is applied by its parent effect),
-				// so the previous context is restored afterwards.
-				const auto outer = Classifier::Context();
+				// Every entry into a hooked game function is written to the log:
+				// the last line before the crash points at the broken place.
 
-				Classifier::Context() = EffectContext{
-					a_actor,
-					a_this ? a_this->GetBaseObject() : nullptr,
-					a_this ? a_this->GetCasterActor().get() : nullptr,
-				};
+				try {
+					// Effects nest (a counter effect is applied by its parent effect),
+					// so the previous context is restored afterwards.
+					const auto outer = Classifier::Context();
 
-				Original(a_this, a_actor, a_value, a_actorValue);
+					Classifier::Context() = EffectContext{
+						a_actor,
+						a_this ? a_this->GetBaseObject() : nullptr,
+						a_this ? a_this->GetCasterActor().get() : nullptr,
+					};
 
-				Classifier::Context() = outer;
+					Original(a_this, a_actor, a_value, a_actorValue);
+
+					Classifier::Context() = outer;
+				}
+				catch (const std::exception& a_error) {
+					logger::error("Effect hook ({}): {}", s_className, a_error.what());
+				}
+				catch (...) {
+					logger::error("Effect hook ({}): unknown error.", s_className);
+				}
 			}
 
 			static inline REL::Relocation<Thunk_t> Original;
 
 			static bool Install(const char* a_className)
 			{
+				s_className = a_className;
+
 				REL::Relocation<std::uintptr_t> vtable{ TEffect::VTABLE[0] };
 
 				if (!vtable.address()) {

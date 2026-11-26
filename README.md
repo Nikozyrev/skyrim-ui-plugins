@@ -168,9 +168,27 @@ unreadable. The size is sent as the scale of the base size of the stylesheet,
 so the view only copies these values into the stylesheet and does not compute
 anything on its own.
 
-`Npc::Overlay` drives the tracker as a SKSE game thread task and refreshes the
-markers at most every 16 ms, so at most 60 times per second. The overlay stays
-idle until the view is up.
+`Npc::Overlay` drives the tracker from a hook of the frame update of the game and
+refreshes the markers at most every 16 ms, so at most 60 times per second. The
+overlay stays idle until the view is up.
+
+The hook replaces one call of the game with a call of the plugin. The plugin calls
+the original function with the arguments of the call and gives its result back, so
+the game does not notice anything. The four argument registers and the result are
+forwarded, because the engine rebuilds the code between the versions and the
+signature of the called function is not the same everywhere: an earlier version of
+the hook dropped the first argument and the game crashed right after the call.
+
+The place of the call is picked by the version of the game, because the engine
+moves its code around and the offset of the call inside the function is not stable.
+The id of the function is stable, so the function itself is taken from the address
+library and only the offset is version dependent:
+
+| Version      | Function of the address library | Offset of the call |
+| ------------ | ------------------------------ | ------------------ |
+| SE 1.5       | `35565`                        | `0x748`            |
+| AE 1.6       | `36564`                        | `0xC26`            |
+| AE 1.7.99+   | `36544` (calls `36564`)        | `0x160`            |
 
 The view reports the size of its viewport to the plugin (`onViewportUpdate`),
 because the positions are sent in pixels and the window of the overlay is not
@@ -376,6 +394,25 @@ Because of that, the plugin does not depend on the messaging interface:
 * the view is brought up by a game thread poll (`SKSE::GetTaskInterface()`),
   which also covers PrismaUI being loaded after this plugin.
 
+### `SKSE::TaskInterface` is not usable for per-frame work
+
+The task interface of SKSE is **not** a way to run code every frame. A task is put
+into a queue that the game empties on its own thread, and the tasks are executed
+**synchronously**: a task that puts another task into the queue while it runs
+grows the queue faster than the game can empty it. The queue fills up, the game
+thread spends all of its time in the queue and the game hangs.
+
+That is exactly what happened here: the overlay was driven by a task that re-armed
+itself every frame. The queue was flooded, the game stopped reacting and the whole
+session hung.
+
+So: **do not use `SKSE::TaskInterface` for work that has to happen every frame.**
+Use the hook of the frame update of the game for that (`Npc::Overlay::Install`).
+
+The task interface is still fine for a one-off job: the poll that waits for
+PrismaUI to be loaded puts a single task into the queue and that task puts the
+next one into the queue, so at most one task is ever pending.
+
 ### The overlay only exists while a world is loaded
 
 The view is created as soon as a world is loaded, and not before. Two reasons:
@@ -465,7 +502,7 @@ src/
     NpcTypes.h           marker of a single NPC
     NpcTracker.h/.cpp    collects the visible NPC markers
     NpcSlots.h/.cpp      pool of the slots of the overlay
-    NpcOverlay.h/.cpp    game thread task that refreshes the markers
+    NpcOverlay.h/.cpp    hook of the frame update that refreshes the markers
   ui/
     PrismaBridge.h/.cpp  failure tolerant PrismaUI wrapper
   util/

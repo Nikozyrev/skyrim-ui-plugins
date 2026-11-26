@@ -105,7 +105,7 @@ namespace
 	}
 }
 
-extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
+SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 {
 	REL::Module::reset();
 
@@ -117,15 +117,23 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 		return false;
 	}
 
-	SKSE::Init(a_skse);
-	SKSE::AllocTrampoline(1 << 10);
+	// Трамплин нужен для хука обновления кадра: хук подменяет вызов игры в
+	// коде, а через трамплин вызывает оригинал.
+	SKSE::Init(a_skse, {.logLevel = spdlog::level::info, .trampoline = true, .trampolineSize = 1 << 10});
+
+	logger::info("Runtime: {}.", REL::Module::get().version().string());
 
 	// The damage hook does not depend on the game state, so it is installed right
 	// away. Damage tracking therefore works even when the messaging interface is
 	// unavailable.
 	Damage::Hook::Install();
-	
-	Npc::Overlay::InstallHook();
+
+	// The hook of the frame update is installed right away as well: the
+	// overlay has to see every frame of the game, including the frames of the
+	// main menu.
+	if (!Npc::Overlay::Install()) {
+		logger::error("Failed to install the hook of the frame update, the NPC overlay stays idle.");
+	}
 
 	// The sender of a SKSE message has to be the name of a *loaded plugin*.
 	// "SKSE" is the pseudo plugin SKSE registers itself under and is the only
