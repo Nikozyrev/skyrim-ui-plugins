@@ -3,6 +3,7 @@
 #include "damage/DamageClassifier.h"
 #include "damage/DamageTracker.h"
 #include "damage/DamageTypes.h"
+#include "npc/NpcHealth.h"
 #include "ui/PrismaBridge.h"
 #include "util/ActorUtil.h"
 
@@ -147,6 +148,12 @@ namespace Damage
 				// use-after-free.
 				if (!g_capturing && a_self && a_damage < 0.0f) {
 					const CaptureGuard guard;
+
+					// The health of the NPC is taken off at the very moment it
+					// takes the hit, so the bar above its head reacts to the
+					// damage right away.
+					Npc::HealthTracker::Get().ApplyDamage(a_self, -a_damage);
+
 					Capture(a_self, a_attacker, -a_damage);
 				}
 

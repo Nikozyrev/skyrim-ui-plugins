@@ -16,6 +16,21 @@ type MarkerStyle = {
 };
 
 /**
+ * The health of an NPC, as it is written into the styles of a slot.
+ *
+ * The values are the plain CSS values of the health bar: the health the NPC
+ * has right now and the health it can have at most. The stylesheet turns
+ * them into the percentage of the bar.
+ */
+type HealthStyle = {
+  /** The health the NPC has right now. */
+  current: string;
+
+  /** The health the NPC can have at most. */
+  max: string;
+};
+
+/**
  * The root element of every slot of the overlay, keyed by the number of the
  * slot.
  *
@@ -33,15 +48,37 @@ const slotElements = new Map<number, HTMLElement>();
  *
  * The values are kept, so a slot whose element is mounted after the plugin
  * already sent the position of its NPC is drawn right away.
+ *
+ * The map is also the place where the values of a frame are collected: a slot
+ * that is in the frame more than once keeps the values of its newest tuple,
+ * so the older ones are never written into the element.
  */
 const slotStyles = new Map<number, MarkerStyle>();
 
 /**
- * Writes the values of a marker into the element of its slot.
+ * The slots whose values changed since the styles were written last.
  *
- * The element of the slot is found by the number of the slot, so the values
- * are written into the element itself. The stylesheet resolves them, so a
- * frame does not have to touch the elements of the slots that did not move.
+ * The values of a frame are collected first and written into the elements
+ * afterwards, so a slot is written once per frame, with its newest values.
+ */
+const dirtySlots = new Set<number>();
+
+/**
+ * The health that was written into a slot last, keyed by the number of the
+ * slot.
+ *
+ * The health is kept as well, so a slot whose element is mounted after the
+ * health of its NPC arrived is drawn right away.
+ */
+const slotHealth = new Map<number, HealthStyle>();
+
+/**
+ * Collects the values of a marker.
+ *
+ * The values are not written into the element right away: they are kept for
+ * the slot and the slot is marked as changed. The elements are written by
+ * `flushMarkerValues`, so a slot that is in a frame more than once is written
+ * once, with its newest values.
  */
 export const setMarkerValues = (
   slot: number,
@@ -49,9 +86,57 @@ export const setMarkerValues = (
   y: string,
   scale: string,
 ) => {
-  const style: MarkerStyle = { x, y, scale };
+  const known = slotStyles.get(slot);
 
-  slotStyles.set(slot, style);
+  if (known && known.x === x && known.y === y && known.scale === scale) {
+    // The values are the same as the ones the slot already has, so the
+    // element does not have to be touched at all.
+    return;
+  }
+
+  slotStyles.set(slot, { x, y, scale });
+
+  dirtySlots.add(slot);
+};
+
+/**
+ * Writes the values of the slots that changed into their elements.
+ *
+ * The element of a slot is found by the number of the slot, so the values are
+ * written into the element itself. The stylesheet resolves them, so a frame
+ * does not have to touch the elements of the slots that did not move.
+ */
+export const flushMarkerValues = () => {
+  if (dirtySlots.size === 0) {
+    return;
+  }
+
+  for (const slot of dirtySlots) {
+    const element = slotElements.get(slot);
+    const style = slotStyles.get(slot);
+
+    if (element && style) {
+      applyStyle(element, style);
+    }
+  }
+
+  dirtySlots.clear();
+};
+
+/**
+ * Writes the health of an NPC into the element of its slot.
+ *
+ * The health is written as two custom properties, so the stylesheet
+ * calculates the percentage of the bar on its own.
+ */
+export const setHealthValues = (
+  slot: number,
+  current: string,
+  max: string,
+) => {
+  const style: HealthStyle = { current, max };
+
+  slotHealth.set(slot, style);
 
   const element = slotElements.get(slot);
 
@@ -59,7 +144,26 @@ export const setMarkerValues = (
     return;
   }
 
-  applyStyle(element, style);
+  applyHealth(element, style);
+};
+
+/**
+ * Drops the health of a slot.
+ *
+ * The properties are removed instead of being reset, so an NPC that comes back
+ * to the screen starts without a health bar again.
+ */
+export const clearHealthValues = (a_slot: number) => {
+  slotHealth.delete(a_slot);
+
+  const element = slotElements.get(a_slot);
+
+  if (!element) {
+    return;
+  }
+
+  element.style.removeProperty('--npc-health-current');
+  element.style.removeProperty('--npc-health-max');
 };
 
 /**
@@ -71,15 +175,19 @@ export const setMarkerValues = (
 export const clearMarkerValues = (a_slot: number) => {
   slotStyles.delete(a_slot);
 
+  dirtySlots.delete(a_slot);
+
   const element = slotElements.get(a_slot);
 
   if (!element) {
     return;
   }
 
-  element.style.removeProperty('--npc-damage-x');
-  element.style.removeProperty('--npc-damage-y');
-  element.style.removeProperty('--npc-damage-scale');
+  element.style.removeProperty('transform');
+  
+  // element.style.removeProperty('--npc-damage-x');
+  // element.style.removeProperty('--npc-damage-y');
+  // element.style.removeProperty('--npc-damage-scale');
 };
 
 /**
@@ -94,11 +202,15 @@ export const registerSlotElement = (a_slot: number, a_element: HTMLElement) => {
 
   const style = slotStyles.get(a_slot);
 
-  if (!style) {
-    return;
+  if (style) {
+    applyStyle(a_element, style);
   }
 
-  applyStyle(a_element, style);
+  const health = slotHealth.get(a_slot);
+
+  if (health) {
+    applyHealth(a_element, health);
+  }
 };
 
 /**
@@ -120,7 +232,21 @@ export const unregisterSlotElement = (
  * Puts the values of a marker into the styles of the element of its slot.
  */
 const applyStyle = (a_element: HTMLElement, a_style: MarkerStyle) => {
-  a_element.style.setProperty('--npc-damage-x', a_style.x);
-  a_element.style.setProperty('--npc-damage-y', a_style.y);
-  a_element.style.setProperty('--npc-damage-scale', a_style.scale);
+  const value = `translate(${a_style.x ?? -9999}px, ${a_style.y ?? -9999}px) scale(${a_style.scale ?? 1})`;
+  a_element.style.setProperty('transform', value);
+  
+  // a_element.style.setProperty('--npc-damage-x', a_style.x);
+  // a_element.style.setProperty('--npc-damage-y', a_style.y);
+  // a_element.style.setProperty('--npc-damage-scale', a_style.scale);
+};
+
+/**
+ * Puts the health of an NPC into the styles of the element of its slot.
+ *
+ * The stylesheet turns the two values into the percentage of the bar, so
+ * the view does not have to calculate anything on its own.
+ */
+const applyHealth = (a_element: HTMLElement, a_style: HealthStyle) => {
+  a_element.style.setProperty('--npc-health-current', a_style.current);
+  a_element.style.setProperty('--npc-health-max', a_style.max);
 };

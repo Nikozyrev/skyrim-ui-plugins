@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "damage/DamageTypes.h"
+#include "npc/NpcHealth.h"
 
 #include <cmath>
 #include <cstdint>
@@ -37,6 +38,12 @@ namespace Npc
 		float x = 0.0f;
 		float y = 0.0f;
 		float radius = 0.0f;
+
+		/// The health of the NPC at the moment of the collection.
+		///
+		/// The health is drawn as a bar above the head of the NPC, so it
+		/// travels with the marker.
+		Health health;
 	};
 
 	/// The size of the viewport of the view, in pixels.

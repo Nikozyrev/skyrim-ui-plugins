@@ -2,6 +2,7 @@
 
 #include "PrismaUI_API.h"
 #include "damage/DamageTypes.h"
+#include "npc/NpcHealth.h"
 #include "npc/NpcSlots.h"
 #include "npc/NpcTypes.h"
 
@@ -10,6 +11,7 @@
 #include <bitset>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -153,6 +155,12 @@ namespace UI
 		///
 		/// A name never changes, so it is only sent once per NPC.
 		std::unordered_set<Damage::ActorId> _knownNames;
+
+		/// The health of the NPCs that the view knows.
+		///
+		/// The health is only sent again when it really changed, so an NPC
+		/// that is at full health costs nothing.
+		std::unordered_map<Damage::ActorId, Npc::Health> _sentHealth;
 
 		/// True when the view lost the state of the slots.
 		///

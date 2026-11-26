@@ -1,5 +1,6 @@
 ﻿#include "npc/NpcTracker.h"
 
+#include "npc/NpcHealth.h"
 #include "util/ActorUtil.h"
 #include "util/GameState.h"
 
@@ -492,6 +493,11 @@ namespace Npc
 								// The name is read from the engine only when the NPC is
 								// seen for the first time.
 								marker.name = ResolveName(a_actor, marker.id);
+
+								// The health of the NPC travels with its marker, so the
+								// bar above its head is always up to date.
+								marker.health = HealthTracker::Get().Sync(a_actor);
+
 								visible.insert(marker.id);
 
 								_markers.push_back(std::move(marker));

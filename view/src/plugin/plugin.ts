@@ -1,11 +1,16 @@
 import { batch, createMemo, createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import { dominantKind, resolveKind } from './damage-colors';
-import { clearMarkerValues, setMarkerValues } from './slot-elements';
+import {
+  clearMarkerValues,
+  flushMarkerValues,
+  setMarkerValues,
+} from './slot-elements';
 import type {
   ActorStats,
   DamageEvent,
   DamageUpdate,
+  NpcHealth,
   NpcNames,
   NpcSlots,
   NpcSlotsHide,
@@ -73,6 +78,16 @@ const [npcSlots, setNpcSlots] = createStore<NpcSlots>({});
 const [npcNames, setNpcNames] = createStore<NpcNames>({});
 
 /**
+ * The health of the NPCs, keyed by their form id.
+ *
+ * The plugin sends the health of an NPC when it enters the screen and every
+ * time it takes damage, so the store holds the health of every NPC that is
+ * on the screen. The bar above the head of an NPC looks its health up by
+ * the id of the NPC.
+ */
+const [healthByNpc, setHealthByNpc] = createStore<NpcHealth>({});
+
+/**
  * The number of the slots of the overlay.
  *
  * The plugin announces it together with the styles of the overlay.
@@ -118,6 +133,7 @@ export {
   connected,
   npcSlots,
   npcNames,
+  healthByNpc,
   slotCount,
   slotIndexes,
   damageByTarget,
@@ -376,6 +392,47 @@ const parseNpcNames = (payload: unknown): NpcNames | null => {
   }
 };
 
+const parseNpcHealth = (payload: unknown): NpcHealth | null => {
+  if (typeof payload !== 'string' || payload.length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const health: NpcHealth = {};
+
+    for (const [id, value] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
+      if (!id || !value || typeof value !== 'object') {
+        continue;
+      }
+
+      const entry = value as { current?: unknown; max?: unknown };
+
+      const current = Number(entry.current);
+      const max = Number(entry.max);
+
+      // A health without a maximum cannot be drawn as a bar.
+      if (!Number.isFinite(current) || !Number.isFinite(max) || max <= 0) {
+        continue;
+      }
+
+      health[id] = { current, max };
+    }
+
+    return health;
+  } catch {
+    // A malformed payload must never break the overlay.
+    return null;
+  }
+};
+
 const parseStyleUpdate = (payload: unknown): StyleUpdate | null => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return null;
@@ -449,6 +506,29 @@ const applyNpcNames = (payload: string) => {
 };
 
 /**
+ * Applies the health of the NPCs.
+ *
+ * The health is keyed by the form id of the NPC, so the bar of a slot can
+ * look it up by the id of the NPC that occupies the slot. The plugin sends
+ * the health of an NPC when it enters the screen and every time it takes
+ * damage.
+ */
+const applyNpcHealth = (payload: string) => {
+  const health = parseNpcHealth(payload);
+  if (!health) {
+    return;
+  }
+
+  batch(() => {
+    for (const [id, entry] of Object.entries(health)) {
+      // The health is only written for its own NPC, so the bars of the
+      // other ones are not drawn again.
+      setHealthByNpc(id, entry);
+    }
+  });
+};
+
+/**
  * Drops the names of the NPCs of the old world.
  */
 const applyNpcNamesClear = () => {
@@ -468,8 +548,15 @@ const applyNpcSlotsHide = (payload: string) => {
   }
 
   const next: NpcSlots = { ...npcSlots };
+  const gone: string[] = [];
 
   for (const slot of slots) {
+    const id = next[slot];
+
+    if (id !== undefined) {
+      gone.push(id);
+    }
+
     delete next[slot];
 
     // The values of the slot are dropped, so an NPC that comes back to the
@@ -478,6 +565,19 @@ const applyNpcSlotsHide = (payload: string) => {
   }
 
   setNpcSlots(reconcile(next));
+
+  // The health of an NPC that left the screen is dropped as well, so the
+  // store does not grow over the session. The plugin sends the health again
+  // when the NPC comes back.
+  if (gone.length > 0) {
+    const health: NpcHealth = { ...healthByNpc };
+
+    for (const id of gone) {
+      delete health[id];
+    }
+
+    setHealthByNpc(reconcile(health));
+  }
 };
 
 /**
@@ -491,48 +591,123 @@ const applyNpcSlotsHide = (payload: string) => {
  *
  * The values are written into the element of the slot, so only the slots that
  * really moved change and only those are drawn again.
+ *
+ * The frame is read with `indexOf` and `slice` in a single pass, so the parts
+ * of the frame are never copied into arrays of their own.
+ *
+ * The frames of the plugin are joined when they arrive faster than the
+ * browser draws them, so a slot can be in the payload more than once. The
+ * values of a slot are kept by the slots themselves, so only the newest values
+ * of a slot are written into its element.
  */
 const applyNpcSlotsMove = (payload: string) => {
   if (typeof payload !== 'string' || payload.length === 0) {
     return;
   }
 
-  let applied = false;
+  const length = payload.length;
+  let start = 0;
 
-  for (const chunk of payload.split(';')) {
-    if (!chunk) {
-      continue;
+  while (start < length) {
+    // The end of the tuple is the next semicolon.
+    let end = payload.indexOf(';', start);
+
+    if (end === -1) {
+      end = length;
     }
 
-    const separator = chunk.indexOf(':');
-    if (separator <= 0) {
-      continue;
+    if (end > start) {
+      const separator = payload.indexOf(':', start);
+
+      if (separator > start && separator < end) {
+        const slot = Number(payload.slice(start, separator));
+
+        if (Number.isInteger(slot) && slot >= 0) {
+          const x = payload.indexOf(',', separator + 1);
+
+          if (x > separator && x < end) {
+            const y = payload.indexOf(',', x + 1);
+
+            if (y > x && y < end) {
+              // A tuple may carry more than three values, the rest is ignored.
+              let scaleEnd = payload.indexOf(',', y + 1);
+
+              if (scaleEnd === -1 || scaleEnd > end) {
+                scaleEnd = end;
+              }
+
+              setMarkerValues(
+                slot,
+                payload.slice(separator + 1, x),
+                payload.slice(x + 1, y),
+                payload.slice(y + 1, scaleEnd),
+              );
+            }
+          }
+        }
+      }
     }
 
-    const slot = Number(chunk.slice(0, separator));
-    if (!Number.isInteger(slot) || slot < 0) {
-      continue;
-    }
-
-    const values = chunk.slice(separator + 1).split(',');
-    if (values.length < 3) {
-      continue;
-    }
-
-    const x = values[0];
-    const y = values[1];
-    const scale = values[2];
-
-    setMarkerValues(slot, x, y, scale);
-
-    applied = true;
+    start = end + 1;
   }
 
-  if (applied) {
-    // A frame proves that the plugin knows the size of the viewport, so
-    // the report of the size is not needed anymore.
-    stopViewportReport();
+  // The elements are written once, after the whole frame is read.
+  flushMarkerValues();
+};
+
+/**
+ * The frame of the positions that has not been applied yet.
+ *
+ * The plugin sends the positions of the slots that moved, so several frames
+ * can arrive before the browser draws the next one. The frames that arrive in
+ * the meantime are joined, because the frame of the plugin only carries the
+ * slots that really moved: a dropped frame would leave a marker at the
+ * position it had before.
+ */
+let pendingNpcSlotsMove: string | undefined;
+
+/**
+ * The handle of the animation frame that applies the collected positions.
+ */
+let npcSlotsMoveFrame: number | undefined;
+
+const flushNpcSlotsMove = () => {
+  npcSlotsMoveFrame = undefined;
+
+  const payload = pendingNpcSlotsMove;
+  pendingNpcSlotsMove = undefined;
+
+  if (payload === undefined) {
+    return;
   }
+
+  applyNpcSlotsMove(payload);
+};
+
+/**
+ * Collects the positions of the plugin and applies them once per frame.
+ *
+ * The plugin can send the positions faster than the browser draws them, so
+ * the positions are not applied right away. They are applied in the next
+ * animation frame, so the work is done at most once per frame.
+ */
+const scheduleNpcSlotsMove = (payload: string) => {
+  if (typeof payload !== 'string' || payload.length === 0) {
+    return;
+  }
+
+  // The frames are joined in the order they arrived, so the newest position
+  // of a slot is the one that is left when it is written.
+  pendingNpcSlotsMove =
+    pendingNpcSlotsMove === undefined
+      ? payload
+      : `${pendingNpcSlotsMove};${payload}`;
+
+  if (npcSlotsMoveFrame !== undefined) {
+    return;
+  }
+
+  npcSlotsMoveFrame = window.requestAnimationFrame(flushNpcSlotsMove);
 };
 
 /**
@@ -563,6 +738,10 @@ const applyStyleUpdate = (payload: string) => {
   ) {
     setSlotCount(update.slotCount);
   }
+
+  // A frame proves that the plugin knows the size of the viewport, so
+  // the report of the size is not needed anymore.
+  stopViewportReport();
 };
 
 declare global {
@@ -582,6 +761,9 @@ declare global {
     /** Called by the plugin for the names of the NPCs. */
     onNpcNames?: (payload: string) => void;
     onNpcNamesClear?: (payload: string) => void;
+
+    /** Called by the plugin for the health of the NPCs. */
+    onNpcHealth?: (payload: string) => void;
 
     /** Called by the plugin for the styles of the overlay. */
     onStyleUpdate?: (payload: string) => void;
@@ -650,9 +832,10 @@ export const initPluginOnWindow = () => {
   window.onDamageUpdate = applyUpdate;
   window.onNpcSlotsHide = applyNpcSlotsHide;
   window.onNpcSlotsShow = applyNpcSlotsShow;
-  window.onNpcSlotsMove = applyNpcSlotsMove;
+  window.onNpcSlotsMove = scheduleNpcSlotsMove;
   window.onNpcNames = applyNpcNames;
   window.onNpcNamesClear = applyNpcNamesClear;
+  window.onNpcHealth = applyNpcHealth;
   window.onStyleUpdate = applyStyleUpdate;
 
   window.setInterval(sweepFeed, FEED_SWEEP_MS);

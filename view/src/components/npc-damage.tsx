@@ -1,10 +1,28 @@
-import { Index, createMemo, onCleanup, onMount, type Accessor } from 'solid-js';
-import { damageByTarget, npcNames, npcSlots, slotIndexes } from '../plugin/plugin';
+import {
+  Index,
+  createEffect,
+  createMemo,
+  onCleanup,
+  onMount,
+  type Accessor,
+} from 'solid-js';
+import {
+  damageByTarget,
+  healthByNpc,
+  npcNames,
+  npcSlots,
+  slotIndexes,
+} from '../plugin/plugin';
 import { DAMAGE_KIND_TEXT } from '../plugin/damage-colors';
-import { registerSlotElement, unregisterSlotElement } from '../plugin/slot-elements';
+import {
+  clearHealthValues,
+  registerSlotElement,
+  setHealthValues,
+  unregisterSlotElement,
+} from '../plugin/slot-elements';
 import type { TargetDamage } from '../plugin/types';
 
-const formatAmount = (value: number) => Math.round(value).toString();
+const formatAmount = (value: number) => Math.round(value).toString(); 
 
 /**
  * The damage that is drawn above the head of the NPC of a slot.
@@ -32,6 +50,45 @@ const Damage = (props: { id: Accessor<string | undefined> }) => {
     <span class={`npc-damage-value ${color()} ${damage() ? '' : 'hidden'}`}>
       {text()}
     </span>
+  );
+};
+
+/**
+ * The bar of the health of the NPC of a slot.
+ *
+ * The bar itself is drawn by the stylesheet: the current health and the
+ * maximum health of the NPC are written into the styles of the slot as
+ * custom properties, so the stylesheet calculates the percentage of the bar
+ * on its own.
+ */
+const HealthBar = (props: { slotIndex: number; id: Accessor<string | undefined> }) => {
+  const health =  createMemo(() => {
+    const id = props.id();
+    return id === undefined ? undefined : healthByNpc[id];
+  });
+
+  /**
+   * Puts the health of the NPC into the styles of the slot.
+   *
+   * The stylesheet resolves the two values into the percentage of the bar,
+   * so only the slot of the NPC that took the damage is touched.
+   */
+  createEffect(() => {
+    const entry = health();
+
+    if (!entry) {
+      clearHealthValues(props.slotIndex);
+      return;
+    }
+
+    setHealthValues(props.slotIndex, String(entry.current), String(entry.max));
+  });
+
+
+  return (
+    <div class={`npc-health ${health() ? '' : 'hidden'}`}>
+      <div class="npc-health-fill" />
+    </div>
   );
 };
 
@@ -94,8 +151,11 @@ const NpcDamageSlot = (props: { index: number }) => {
         element = el;
       }}
     >
-      <div class="w-fit text-center text-white">{name()}</div>
-      <Damage id={id} />
+      <div class="npc-damage-stack">
+        <div class="npc-damage-name">{name()}</div>
+        <HealthBar id={id} slotIndex={props.index} />
+        <Damage id={id} />
+      </div>
     </div>
   );
 };

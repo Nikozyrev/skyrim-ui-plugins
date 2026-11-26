@@ -74,11 +74,6 @@ body {
   top: 0;
   left: 0;
   transform-origin: 0 0;
-  transform: translate(
-      calc(var(--npc-damage-x, -9999) * 1px),
-      calc(var(--npc-damage-y, -9999) * 1px)
-    )
-    scale(var(--npc-damage-scale, 1));
   font-size: calc(var(--npc-damage-base-font-size) * 1px);
   will-change: transform;
   font-weight: 700;
@@ -94,12 +89,69 @@ body {
 }
 
 /*
+ * The column of a marker: the name of the NPC, its health bar and the number
+ * of the damage.
+ *
+ * It is placed with its lower edge on the anchor point, so the whole column
+ * is above the head of the NPC. The anchor point is the origin of the scale
+ * of the marker, so the column grows with the size of the NPC on the screen
+ * and its lower edge always touches the head.
+ */
+.npc-damage-stack {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate(-50%, -100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+/*
+ * The name of the NPC.
+ */
+.npc-damage-name {
+  color: #fff;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/*
+ * The track of the health bar.
+ *
+ * Its length is a multiple of the size of the font, so it follows the size
+ * of the NPC on the screen.
+ */
+.npc-health {
+  width: 3em;
+  height: 0.3em;
+  background: rgb(0 0 0 / 0.55);
+  overflow: hidden;
+}
+
+/*
+ * The fill of the health bar.
+ *
+ * The current health and the maximum health of the NPC are custom
+ * properties of the slot, so the stylesheet calculates the percentage of the
+ * bar on its own.
+ */
+.npc-health-fill {
+  height: 100%;
+  width: calc(
+    var(--npc-health-current, 0) / var(--npc-health-max, 1) * 100%
+  );
+  background: #d0271d;
+  transition: width 150ms ease-out;
+}
+
+/*
  * The value itself. It is recreated on every hit, which restarts the
  * animation and makes a new number pop up.
  */
 .npc-damage-value {
   display: inline-block;
-  transform: translate(-50%, -100%);
   /* animation: npc-damage-pop 260ms cubic-bezier(0.22, 1, 0.36, 1); */
 }
 

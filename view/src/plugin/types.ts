@@ -87,6 +87,26 @@ export type NpcSlots = Record<number, string>;
 export type NpcNames = Record<string, string>;
 
 /**
+ * The health of a single NPC.
+ */
+export type NpcHealthEntry = {
+  /** The health the NPC has right now. */
+  current: number;
+
+  /** The health the NPC can have at most. */
+  max: number;
+};
+
+/**
+ * The health of the NPCs, keyed by their form id.
+ *
+ * The health travels on a channel of its own: it is sent when the NPC
+ * enters the screen and every time it takes damage, so the bar above its
+ * head always shows the health of the NPC.
+ */
+export type NpcHealth = Record<string, NpcHealthEntry>;
+
+/**
  * One NPC that entered the screen.
  *
  * The payload of the plugin is a frame of the tuples "slot:id", separated by

@@ -41,6 +41,14 @@ namespace UI
 		constexpr auto kNpcNamesFunction = "onNpcNames";
 		constexpr auto kNpcNamesClearFunction = "onNpcNamesClear";
 
+		/// Name of the JavaScript entry point the health of the NPCs listens on.
+		///
+		/// The health is a record of the form id of an NPC and its health. It
+		/// travels on a channel of its own, because it changes all the time:
+		/// it is sent when the NPC enters the screen and every time it takes
+		/// damage.
+		constexpr auto kNpcHealthFunction = "onNpcHealth";
+
 		/// Name of the JavaScript entry point the view uses to report the size
 		/// of its viewport. The positions of the markers are sent in pixels,
 		/// so the plugin needs that size.
@@ -391,6 +399,9 @@ namespace UI
 		// the last update.
 		_npcStateStale = true;
 		_slotSent.reset();
+
+		// The health of the NPCs is lost with it, so it is sent again as well.
+		_sentHealth.clear();
 	}
 
 	void Bridge::OnViewportUpdate(const char* a_argument)
@@ -532,6 +543,58 @@ namespace UI
 			}
 		}
 
+		// The health of the NPCs that the view does not know yet or whose
+		// health changed. The health is drawn as a bar above the head of the
+		// NPC, so it is only sent when it really changed.
+		JSON health = JSON::object();
+
+		std::vector<Damage::ActorId> healthIds;
+		std::vector<Npc::Health> healthValues;
+
+		for (const auto& entry : a_delta.occupied) {
+			const auto& value = entry.marker.health;
+
+			if (!value.IsValid()) {
+				continue;
+			}
+
+			const auto it = _sentHealth.find(entry.id);
+
+			if (it != _sentHealth.end() && it->second == value) {
+				continue;
+			}
+
+			health[FormIdToString(entry.id)] = {
+				{ "current", value.current },
+				{ "max", value.max },
+			};
+
+			healthIds.push_back(entry.id);
+			healthValues.push_back(value);
+		}
+
+		if (!health.empty() && Send(kNpcHealthFunction, health.dump())) {
+			for (std::size_t i = 0; i < healthIds.size(); ++i) {
+				_sentHealth[healthIds[i]] = healthValues[i];
+			}
+		}
+
+		// The health of the NPCs that left the screen is forgotten, so it is
+		// sent again when they come back.
+		if (!a_delta.hidden.empty()) {
+			std::unordered_map<Damage::ActorId, Npc::Health> known;
+
+			for (const auto& entry : a_delta.occupied) {
+				const auto it = _sentHealth.find(entry.id);
+
+				if (it != _sentHealth.end()) {
+					known.emplace(entry.id, it->second);
+				}
+			}
+
+			_sentHealth = std::move(known);
+		}
+
 		// The slots of the NPCs that moved.
 		_scratchSlots.clear();
 		_scratchValues.clear();
@@ -623,6 +686,7 @@ namespace UI
 
 		// The names of the old world are of no use to the new one.
 		_knownNames.clear();
+		_sentHealth.clear();
 		Send(kNpcNamesClearFunction, "");
 
 		// There is nothing to show yet, so the state is not stale: the NPCs
