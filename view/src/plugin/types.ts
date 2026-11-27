@@ -137,6 +137,37 @@ export type NpcSlotsShow = NpcSlotEntry[];
 export type NpcSlotsHide = number[];
 
 /**
+ * A frame of the positions of the markers.
+ *
+ * The frame is a plain string, so it is parsed by hand: it is the hottest
+ * path of the overlay and a JSON parser would cost more than the frame
+ * itself.
+ *
+ * The frame looks like this:
+ *
+ * ```
+ * T:1753600000123;0:100.5,200.5,1.00;3:400.0,300.0,1.25
+ * ```
+ *
+ * The first part is the time of the frame: the moment the plugin measured
+ * the positions, in milliseconds since the epoch. It is the clock of the
+ * system, so the view can compare it with its own clock and tell how old the
+ * positions are.
+ *
+ * Every other part is a tuple "slot:x,y,scale": the number of the slot of
+ * the overlay, the horizontal offset, the vertical offset and the scale of
+ * the font of the number. The offsets are in pixels with a tenth of a pixel.
+ *
+ * The positions are already the future ones: the plugin moves every marker
+ * forward by the length of the frame the view is behind, so the view only
+ * writes the numbers into the element of the slot.
+ *
+ * The frames are joined when they arrive faster than the browser draws them,
+ * so a payload can hold the times of several frames.
+ */
+export type NpcSlotsMove = string;
+
+/**
  * The styles of the overlay.
  *
  * The plugin owns the styles of the numbers above the heads, so the view does

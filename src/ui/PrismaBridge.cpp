@@ -54,6 +54,14 @@ namespace UI
 		/// so the plugin needs that size.
 		constexpr auto kViewportFunction = "onViewportUpdate";
 
+		/// Name of the JavaScript entry point the view uses to report how old
+		/// the positions of the last frame are.
+		///
+		/// The number tells how long the positions of a frame need until they
+		/// are on the screen. It is the delay of the whole path, so it says
+		/// how much of it the view has to compensate.
+		constexpr auto kNpcSyncFunction = "onNpcSync";
+
 		/// Name of the JavaScript entry point the view listens on for the
 		/// styles of the overlay.
 		constexpr auto kStyleFunction = "onStyleUpdate";
@@ -74,6 +82,15 @@ namespace UI
 		void OnViewportUpdateTrampoline(const char* a_argument)
 		{
 			Bridge::Get().OnViewportUpdate(a_argument);
+		}
+
+		/// The view calls this whenever it drew a frame of the markers.
+		///
+		/// The argument is the number of milliseconds that the positions of
+		/// the frame needed until they were on the screen.
+		void OnNpcSyncTrampoline(const char* a_argument)
+		{
+			Bridge::Get().OnNpcSync(a_argument);
 		}
 
 		/// Reads an integer out of a piece of text.
@@ -225,43 +242,99 @@ namespace UI
 			return frame;
 		}
 
+		/// The bigger of the two numbers.
+		///
+		/// The helpers of the standard library cannot be used here: the
+		/// headers of windows define `min` and `max` as macros, so they
+		/// break the name of the helper.
+		template <typename T>
+		[[nodiscard]] constexpr T Larger(T a_left, T a_right)
+		{
+			return a_left > a_right ? a_left : a_right;
+		}
+
+		/// The smaller of the two numbers.
+		template <typename T>
+		[[nodiscard]] constexpr T Smaller(T a_left, T a_right)
+		{
+			return a_left < a_right ? a_left : a_right;
+		}
+
+		/// The share of the movement of a marker that the prediction repeats.
+		///
+		/// A marker that moves at a constant speed is put exactly where it
+		/// will be when the frame it belongs to is on the screen. The factor
+		/// leaves a little room: the movement of a camera is never constant,
+		/// so a prediction that repeats the whole movement overshoots when the
+		/// camera stops.
+		constexpr float kPredictionGain = 0.85f;
+
+		/// The share of the previous movement that the current one has to
+		/// reach, so the movement is still seen as going on.
+		///
+		/// When the camera slows down, the share gets smaller and the
+		/// prediction gets smaller with it, so a marker does not run away
+		/// when the camera stops.
+		constexpr float kSustainedRatio = 0.5f;
+
+		/// The smallest movement that is worth a prediction, in pixels.
+		constexpr float kMinMovement = 0.2f;
+
+		/// The longest time a prediction may look ahead, in milliseconds.
+		constexpr float kMaxPredictionMs = 250.0f;
+
+		/// The longest distance a prediction may move a marker, in pixels.
+		constexpr float kMaxPredictionPx = 400.0f;
+
+		/// Writes a number into a frame.
+		///
+		/// The offsets of a marker are written with a tenth of a pixel and
+		/// the scale of its font with a hundredth. The view needs the tenth
+		/// of a pixel to tell how fast a marker moves: a marker that is put
+		/// on a whole pixel cannot be moved forward in time.
+		void AppendNumber(std::string& a_frame, float a_value, int a_decimals)
+		{
+			char buffer[32];
+
+			const int written = std::snprintf(buffer, sizeof(buffer), "%.*f", a_decimals, a_value);
+
+			if (written > 0) {
+				a_frame.append(buffer, static_cast<std::size_t>(written));
+			}
+		}
+
 		/// Builds a frame of the positions of the slots.
 		///
 		/// A frame is a list of the tuples "slot:x,y,scale", separated by
 		/// semicolons. The slot is the number of the slot of the overlay and
 		/// the numbers are the plain CSS values of the marker, so a frame only
 		/// carries the slots that really moved.
+		///
+		/// The frame starts with the time of the frame. The view compares it
+		/// with its own clock, so it knows how old the positions of the frame
+		/// are and can report it to the plugin.
 		std::string BuildFrame(const std::vector<Npc::ViewMarker>& a_values,
-							   const std::vector<std::uint8_t>& a_slots)
+							   const std::vector<std::uint8_t>& a_slots,
+							   std::int64_t a_time)
 		{
 			std::string frame;
 
+			frame += "T:";
+			frame += std::to_string(a_time);
+
 			for (std::size_t i = 0; i < a_slots.size(); ++i) {
-				if (!frame.empty()) {
-					frame.push_back(';');
-				}
+				frame.push_back(';');
 
 				const auto& value = a_values[i];
 
 				frame += std::to_string(a_slots[i]);
 				frame.push_back(':');
-				frame += std::to_string(value.x);
-				frame.push_back(',');
-				frame += std::to_string(value.y);
-				frame.push_back(',');
 
-				// The scale is a float, so it is written with a fixed number
-				// of decimals: the view parses it as a plain number.
-				//
-				// Two decimals are enough: the scale is the size of the font
-				// of the number divided by the base size, and both of them
-				// are whole numbers, so the scale is a fraction with a step
-				// of 1/11. The error of the rounding stays below a hundredth
-				// of a pixel and two bytes of every marker are saved.
-				char buffer[32];
-				std::snprintf(buffer, sizeof(buffer), "%.2f", value.scale);
-
-				frame += buffer;
+				AppendNumber(frame, value.x, 1);
+				frame.push_back(',');
+				AppendNumber(frame, value.y, 1);
+				frame.push_back(',');
+				AppendNumber(frame, value.scale, 2);
 			}
 
 			return frame;
@@ -344,6 +417,10 @@ namespace UI
 		// report the size of its viewport.
 		_api->RegisterJSListener(view, kViewportFunction, &OnViewportUpdateTrampoline);
 
+		// The view reports how old the positions of a frame are when it drew
+		// it, so the delay of the whole path is visible in the log.
+		_api->RegisterJSListener(view, kNpcSyncFunction, &OnNpcSyncTrampoline);
+
 		logger::info("PrismaUI view '{}' created.", a_viewPath);
 		return true;
 	}
@@ -398,7 +475,10 @@ namespace UI
 		// every NPC have to be sent again even when they did not change since
 		// the last update.
 		_npcStateStale = true;
-		_slotSent.reset();
+
+		for (auto& slot : _slots) {
+			slot = SlotState{};
+		}
 
 		// The health of the NPCs is lost with it, so it is sent again as well.
 		_sentHealth.clear();
@@ -424,8 +504,11 @@ namespace UI
 		_viewport = viewport;
 
 		// The positions are in pixels, so every marker moved to another pixel
-		// when the size of the viewport changed.
-		_slotSent.reset();
+		// when the size of the viewport changed. The measurements are dropped
+		// as well: they belong to the old size of the viewport.
+		for (auto& slot : _slots) {
+			slot = SlotState{};
+		}
 
 		// The size changes on every pixel while the window of the overlay is
 		// dragged, so only the first one is worth a line in the log.
@@ -445,6 +528,25 @@ namespace UI
 	bool Bridge::IsViewCreated() const
 	{
 		return _view.load() != 0;
+	}
+
+	void Bridge::OnNpcSync(const char* a_argument)
+	{
+		if (!a_argument) {
+			return;
+		}
+
+		const std::string_view payload(a_argument);
+
+		int age = 0;
+
+		if (!ParseInt(payload, age) || age < 0) {
+			return;
+		}
+
+		// The view runs on its own thread, so the number is written in an
+		// atomic and read by the game thread.
+		_syncAge.store(age);
 	}
 
 	void Bridge::OnDamageRecorded(const Damage::DamageEvent& a_event)
@@ -482,7 +584,73 @@ namespace UI
 		Send(kUpdateFunction, payload.dump());
 	}
 
-	void Bridge::SendNpcSlots(const Npc::SlotDelta& a_delta)
+	Npc::ViewMarker Bridge::Predict(const SlotState& a_state,
+									const Npc::ViewMarker& a_measured,
+									std::int64_t a_time,
+									double a_horizon)
+	{
+		// The slot was never measured, so there is no movement to follow.
+		if (a_state.measuredTime == 0 || a_horizon <= 0.0) {
+			return a_measured;
+		}
+
+		// The time between the last measurement and this one. It is the
+		// length of a frame of the game, so it is also the time in which
+		// the marker moved the distance it moved.
+		const auto dt = static_cast<double>(a_time - a_state.measuredTime);
+
+		// Two measurements that are too close or too far apart do not tell
+		// how fast the marker moves.
+		if (dt <= 0.0 || dt > kMaxPredictionMs) {
+			return a_measured;
+		}
+
+		const auto dx = a_measured.x - a_state.measured.x;
+		const auto dy = a_measured.y - a_state.measured.y;
+
+		if (std::abs(dx) < kMinMovement && std::abs(dy) < kMinMovement) {
+			return a_measured;
+		}
+
+		// How much of the movement is still going on. When the camera slows
+		// down, the movement of the last frame says so, and the prediction
+		// becomes smaller with it.
+		auto share = 1.0;
+
+		if (a_state.moved > 0.0f) {
+			const auto moved = std::sqrt(dx * dx + dy * dy);
+			const auto ratio = moved / Larger(a_state.moved, kMinMovement);
+
+			share = Smaller(1.0, static_cast<double>(ratio / kSustainedRatio));
+		}
+
+		const auto factor = kPredictionGain * share * a_horizon / dt;
+
+		Npc::ViewMarker result = a_measured;
+
+		result.x = a_measured.x + static_cast<float>(dx * factor);
+		result.y = a_measured.y + static_cast<float>(dy * factor);
+
+		// The prediction is never allowed to run away.
+		const auto offsetX = result.x - a_measured.x;
+		const auto offsetY = result.y - a_measured.y;
+
+		const auto distance = std::sqrt(offsetX * offsetX + offsetY * offsetY);
+
+		if (distance > kMaxPredictionPx) {
+			const auto scale = kMaxPredictionPx / distance;
+
+			result.x = a_measured.x + offsetX * scale;
+			result.y = a_measured.y + offsetY * scale;
+		}
+
+		return result;
+	}
+
+	void Bridge::SendNpcSlots(const Npc::SlotDelta& a_delta,
+							  std::int64_t a_time,
+							  int a_frameInterval,
+							  int a_leadFrames)
 	{
 		if (!_api || !_viewReady.load(std::memory_order_acquire)) {
 			return;
@@ -509,7 +677,9 @@ namespace UI
 		if (!_scratchHide.empty()) {
 			if (Send(kNpcSlotsHideFunction, BuildHideFrame(_scratchHide))) {
 				for (const auto slot : _scratchHide) {
-					_slotSent.reset(slot);
+					// The slot is free now, so its measurements are of no
+					// use to the NPC that takes it next.
+					_slots[slot] = SlotState{};
 				}
 
 				_pendingHide.clear();
@@ -519,6 +689,85 @@ namespace UI
 				// with one of the next frames.
 				_pendingHide = _scratchHide;
 			}
+		}
+
+		// How far the markers have to be moved forward.
+		//
+		// The page of the view is drawn in the frame after the one that was
+		// measured and it is composited with the frame after that one, so a
+		// whole frame of the game has to be compensated. A pipeline that
+		// fell further behind is compensated frame by frame, and a camera
+		// that was already one frame old needs one frame more.
+		auto frames = 1 + a_leadFrames;
+
+		const auto age = _syncAge.load();
+
+		if (age > 0 && a_frameInterval > 0) {
+			const auto behind = static_cast<int>((age + a_frameInterval - 1) / a_frameInterval);
+
+			frames = Larger(frames, behind + a_leadFrames);
+		}
+
+		const auto horizon = Smaller(static_cast<double>(frames * a_frameInterval),
+									 static_cast<double>(kMaxPredictionMs));
+
+		// The horizon is written down, so the log can tell how much of the
+		// delay of the whole path was compensated.
+		_predictionFrames.store(frames, std::memory_order_relaxed);
+		_predictionHorizon.store(static_cast<std::int64_t>(horizon + 0.5),
+								  std::memory_order_relaxed);
+
+		// The slots of the NPCs that moved. The frame goes first: it is the
+		// one that has to be on the screen as soon as possible, while the
+		// frames of the other channels only carry the names, the health and
+		// the slots that left the screen.
+		_scratchSlots.clear();
+		_scratchValues.clear();
+
+		for (const auto& entry : a_delta.occupied) {
+			auto& state = _slots[entry.index];
+
+			const auto measured = Npc::BuildViewMarker(entry.marker, _viewport);
+
+			// The first measurement of a slot has no movement to follow.
+			if (state.measuredTime == 0) {
+				state.measured = measured;
+				state.measuredTime = a_time;
+				state.moved = 0.0f;
+			}
+
+			const auto value = Predict(state, measured, a_time, horizon);
+
+			// The measurements are kept for every frame, not only for the
+			// frames that are sent, so the movement of a marker is always
+			// the movement of the last frame.
+			const auto dx = measured.x - state.measured.x;
+			const auto dy = measured.y - state.measured.y;
+
+			state.moved = static_cast<float>(std::sqrt(dx * dx + dy * dy));
+			state.measured = measured;
+			state.measuredTime = a_time;
+
+			if (state.known && state.sent == value) {
+				continue;
+			}
+
+			_scratchSlots.push_back(entry.index);
+			_scratchValues.push_back(value);
+		}
+
+		if (!_scratchSlots.empty()) {
+			if (Send(kNpcSlotsMoveFunction, BuildFrame(_scratchValues, _scratchSlots, a_time))) {
+				for (std::size_t i = 0; i < _scratchSlots.size(); ++i) {
+					_slots[_scratchSlots[i]].sent = _scratchValues[i];
+					_slots[_scratchSlots[i]].known = true;
+				}
+			}
+
+			// The positions are not known by the view, so they are sent again
+			// with the next frame. The rest of the frame still goes out: the
+			// view needs the ids and the names of the NPCs that entered the
+			// screen even when a position was lost.
 		}
 
 		// The NPCs that entered the screen. Their ids travel with the numbers
@@ -594,36 +843,6 @@ namespace UI
 
 			_sentHealth = std::move(known);
 		}
-
-		// The slots of the NPCs that moved.
-		_scratchSlots.clear();
-		_scratchValues.clear();
-
-		for (const auto& entry : a_delta.occupied) {
-			const auto value = Npc::BuildViewMarker(entry.marker, _viewport);
-
-			if (_slotSent.test(entry.index) && _slotValues[entry.index] == value) {
-				continue;
-			}
-
-			_scratchSlots.push_back(entry.index);
-			_scratchValues.push_back(value);
-		}
-
-		if (_scratchSlots.empty()) {
-			return;
-		}
-
-		if (!Send(kNpcSlotsMoveFunction, BuildFrame(_scratchValues, _scratchSlots))) {
-			// The positions are not known by the view, so they are sent again
-			// with the next frame.
-			return;
-		}
-
-		for (std::size_t i = 0; i < _scratchSlots.size(); ++i) {
-			_slotValues[_scratchSlots[i]] = _scratchValues[i];
-			_slotSent.set(_scratchSlots[i]);
-		}
 	}
 
 	bool Bridge::SendShowAndNames(const std::vector<Npc::SlotEntry>& a_entries)
@@ -671,7 +890,7 @@ namespace UI
 
 		// The view has to drop the NPCs it knows.
 		for (std::size_t i = 0; i < Npc::kMaxSlots; ++i) {
-			if (!_slotSent.test(i)) {
+			if (!_slots[i].known) {
 				continue;
 			}
 
@@ -682,7 +901,9 @@ namespace UI
 			}
 		}
 
-		_slotSent.reset();
+		for (auto& slot : _slots) {
+			slot = SlotState{};
+		}
 
 		// The names of the old world are of no use to the new one.
 		_knownNames.clear();

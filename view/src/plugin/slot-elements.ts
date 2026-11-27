@@ -2,7 +2,11 @@
  * The values of a marker, as they are written into the styles of a slot.
  *
  * The values are the plain CSS values of the number above the head: the two
- * offsets in whole pixels and the scale of the font.
+ * offsets in pixels and the scale of the font.
+ *
+ * The plugin calculates the future on its own: the values that arrive here
+ * are already the ones the marker will have when the game frame they belong
+ * to is on the screen. The view only writes them into the element.
  */
 type MarkerStyle = {
   /** The horizontal offset of the number, in pixels. */
@@ -13,6 +17,15 @@ type MarkerStyle = {
 
   /** The scale of the font of the number. */
   scale: string;
+
+  /**
+   * The moment the plugin measured the position.
+   *
+   * The time is a part of the values of a slot: it says how old the
+   * positions of the frame are, so the view can report the delay of the
+   * whole path to the plugin.
+   */
+  time: number;
 };
 
 /**
@@ -79,22 +92,32 @@ const slotHealth = new Map<number, HealthStyle>();
  * the slot and the slot is marked as changed. The elements are written by
  * `flushMarkerValues`, so a slot that is in a frame more than once is written
  * once, with its newest values.
+ *
+ * The time is the moment the plugin measured the position. It is needed to
+ * tell how old the position is.
  */
 export const setMarkerValues = (
   slot: number,
   x: string,
   y: string,
   scale: string,
+  time: number,
 ) => {
   const known = slotStyles.get(slot);
 
-  if (known && known.x === x && known.y === y && known.scale === scale) {
+  if (
+    known &&
+    known.x === x &&
+    known.y === y &&
+    known.scale === scale &&
+    known.time === time
+  ) {
     // The values are the same as the ones the slot already has, so the
     // element does not have to be touched at all.
     return;
   }
 
-  slotStyles.set(slot, { x, y, scale });
+  slotStyles.set(slot, { x, y, scale, time });
 
   dirtySlots.add(slot);
 };
@@ -105,11 +128,23 @@ export const setMarkerValues = (
  * The element of a slot is found by the number of the slot, so the values are
  * written into the element itself. The stylesheet resolves them, so a frame
  * does not have to touch the elements of the slots that did not move.
+ *
+ * The values that are written are the ones the marker will have when the
+ * game frame it belongs to is on the screen: the plugin moves every marker
+ * forward by the length of the frame the view is behind, so the view does not
+ * have to calculate anything on its own.
+ *
+ * @return the number of milliseconds that the positions of the newest
+ *         measurement needed until they were on the screen
  */
-export const flushMarkerValues = () => {
+export const flushMarkerValues = (): number => {
   if (dirtySlots.size === 0) {
-    return;
+    return 0;
   }
+
+  const now = Date.now();
+
+  let newest = 0;
 
   for (const slot of dirtySlots) {
     const element = slotElements.get(slot);
@@ -118,9 +153,19 @@ export const flushMarkerValues = () => {
     if (element && style) {
       applyStyle(element, style);
     }
+
+    if (style && style.time > newest) {
+      newest = style.time;
+    }
   }
 
   dirtySlots.clear();
+
+  if (newest === 0) {
+    return 0;
+  }
+
+  return Math.max(0, now - newest);
 };
 
 /**
@@ -184,10 +229,6 @@ export const clearMarkerValues = (a_slot: number) => {
   }
 
   element.style.removeProperty('transform');
-  
-  // element.style.removeProperty('--npc-damage-x');
-  // element.style.removeProperty('--npc-damage-y');
-  // element.style.removeProperty('--npc-damage-scale');
 };
 
 /**
@@ -230,14 +271,17 @@ export const unregisterSlotElement = (
 
 /**
  * Puts the values of a marker into the styles of the element of its slot.
+ *
+ * The position is the one the marker will have when the page is painted, so
+ * it is written with two decimals: a marker that moves fast is put between
+ * two pixels and the browser has to know where exactly.
  */
 const applyStyle = (a_element: HTMLElement, a_style: MarkerStyle) => {
-  const value = `translate(${a_style.x ?? -9999}px, ${a_style.y ?? -9999}px) scale(${a_style.scale ?? 1})`;
+  const x = Math.round(Number(a_style.x) * 100) / 100;
+  const y = Math.round(Number(a_style.y) * 100) / 100;
+
+  const value = `translate(${x ?? -9999}px, ${y ?? -9999}px) scale(${a_style.scale ?? 1})`;
   a_element.style.setProperty('transform', value);
-  
-  // a_element.style.setProperty('--npc-damage-x', a_style.x);
-  // a_element.style.setProperty('--npc-damage-y', a_style.y);
-  // a_element.style.setProperty('--npc-damage-scale', a_style.scale);
 };
 
 /**

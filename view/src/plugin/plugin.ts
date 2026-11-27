@@ -589,6 +589,14 @@ const applyNpcSlotsHide = (payload: string) => {
  * plain CSS values of the number: the horizontal offset, the vertical offset
  * in whole pixels and the scale of the font.
  *
+ * The frame starts with the time of the frame: the moment the plugin measured
+ * the positions. The view compares it with its own clock, so it knows how
+ * old the positions are and can report it to the plugin.
+ *
+ * The positions themselves are already the future ones: the plugin moves
+ * every marker forward by the length of the frame the view is behind, so the
+ * view only writes the numbers into the element of the slot.
+ *
  * The values are written into the element of the slot, so only the slots that
  * really moved change and only those are drawn again.
  *
@@ -607,6 +615,7 @@ const applyNpcSlotsMove = (payload: string) => {
 
   const length = payload.length;
   let start = 0;
+  let time = 0;
 
   while (start < length) {
     // The end of the tuple is the next semicolon.
@@ -617,31 +626,43 @@ const applyNpcSlotsMove = (payload: string) => {
     }
 
     if (end > start) {
-      const separator = payload.indexOf(':', start);
+      if (payload.startsWith('T:', start)) {
+        // The time of a frame. A payload can hold the times of several
+        // frames, because the frames are joined when they arrive faster
+        // than the browser draws them.
+        const parsedTime = Number(payload.slice(start + 2, end));
 
-      if (separator > start && separator < end) {
-        const slot = Number(payload.slice(start, separator));
+        if (Number.isFinite(parsedTime)) {
+          time = parsedTime;
+        }
+      } else {
+        const separator = payload.indexOf(':', start);
 
-        if (Number.isInteger(slot) && slot >= 0) {
-          const x = payload.indexOf(',', separator + 1);
+        if (separator > start && separator < end) {
+          const slot = Number(payload.slice(start, separator));
 
-          if (x > separator && x < end) {
-            const y = payload.indexOf(',', x + 1);
+          if (Number.isInteger(slot) && slot >= 0) {
+            const x = payload.indexOf(',', separator + 1);
 
-            if (y > x && y < end) {
-              // A tuple may carry more than three values, the rest is ignored.
-              let scaleEnd = payload.indexOf(',', y + 1);
+            if (x > separator && x < end) {
+              const y = payload.indexOf(',', x + 1);
 
-              if (scaleEnd === -1 || scaleEnd > end) {
-                scaleEnd = end;
+              if (y > x && y < end) {
+                // A tuple may carry more than three values, the rest is ignored.
+                let scaleEnd = payload.indexOf(',', y + 1);
+
+                if (scaleEnd === -1 || scaleEnd > end) {
+                  scaleEnd = end;
+                }
+
+                setMarkerValues(
+                  slot,
+                  payload.slice(separator + 1, x),
+                  payload.slice(x + 1, y),
+                  payload.slice(y + 1, scaleEnd),
+                  time,
+                );
               }
-
-              setMarkerValues(
-                slot,
-                payload.slice(separator + 1, x),
-                payload.slice(x + 1, y),
-                payload.slice(y + 1, scaleEnd),
-              );
             }
           }
         }
@@ -652,7 +673,41 @@ const applyNpcSlotsMove = (payload: string) => {
   }
 
   // The elements are written once, after the whole frame is read.
-  flushMarkerValues();
+  const age = flushMarkerValues();
+
+  reportSync(age);
+};
+
+/**
+ * The moment the last report of the delay was sent, in milliseconds.
+ */
+let lastSyncReport = 0;
+
+/**
+ * Reports the delay of the last frame to the plugin.
+ *
+ * The delay is the time that the positions of a frame needed until they were
+ * on the screen. It is the delay of the whole path, from the moment the
+ * plugin measured the positions until the moment the page was painted, so it
+ * says how much of it the view has to compensate.
+ *
+ * The report is sent once a second: the delay does not change much from one
+ * frame to the next, and the plugin writes it to its log.
+ */
+const reportSync = (a_age: number) => {
+  if (a_age <= 0) {
+    return;
+  }
+
+  const now = Date.now();
+
+  if (now - lastSyncReport < 1000) {
+    return;
+  }
+
+  lastSyncReport = now;
+
+  window.onNpcSync?.(String(a_age));
 };
 
 /**
@@ -770,6 +825,9 @@ declare global {
 
     /** Called by the view to tell the plugin the size of the viewport. */
     onViewportUpdate?: (payload: string) => void;
+
+    /** Called by the view to tell the plugin how old the last frame was. */
+    onNpcSync?: (payload: string) => void;
 
     /** Called by the view to tell the plugin that it is ready to receive data. */
     onViewReady?: () => void;

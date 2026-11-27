@@ -30,6 +30,36 @@ namespace UI
 	/// the game - the damage tracking keeps working in the background.
 	class Bridge
 	{
+	private:
+		/// The state of a single slot of the overlay.
+		///
+		/// The bridge knows the measured positions of the markers and how
+		/// fast they move, so it can put every marker where it will be when
+		/// the game frame it belongs to is on the screen. The view only
+		/// writes the values it gets into the element of the slot.
+		struct SlotState
+		{
+			/// The last measured position of the marker.
+			Npc::ViewMarker measured{};
+
+			/// The moment the last measurement was made, in milliseconds
+			/// since the epoch. It is zero as long as the slot was never
+			/// measured.
+			std::int64_t measuredTime = 0;
+
+			/// The length of the movement of the last frame, in pixels.
+			///
+			/// It is the movement of the marker between the last two
+			/// measurements. It says whether the movement is still going on.
+			float moved = 0.0f;
+
+			/// The position that the view knows.
+			Npc::ViewMarker sent{};
+
+			/// True when the view knows the position of the slot.
+			bool known = false;
+		};
+
 	public:
 		static Bridge& Get();
 
@@ -63,6 +93,29 @@ namespace UI
 		/// True when the view was created successfully.
 		[[nodiscard]] bool IsViewCreated() const;
 
+		/// Called by the view whenever it drew a frame of the markers.
+		///
+		/// The argument is the number of milliseconds that the positions of
+		/// the frame needed until they were on the screen. It is the delay of
+		/// the whole path, so it says how much of it the view has to
+		/// compensate.
+		void OnNpcSync(const char* a_argument);
+
+		/// The delay of the last frame, in milliseconds.
+		///
+		/// It is negative when the view did not report a frame yet.
+		[[nodiscard]] std::int64_t SyncAge() const { return _syncAge.load(); }
+
+		/// The horizon of the last prediction, in milliseconds.
+		///
+		/// It is the time that the markers were moved forward, so it says
+		/// how much of the delay of the whole path was compensated.
+		[[nodiscard]] std::int64_t PredictionHorizon() const { return _predictionHorizon.load(); }
+
+		/// The number of frames of the game that the last prediction
+		/// compensated.
+		[[nodiscard]] int PredictionFrames() const { return _predictionFrames.load(); }
+
 		/// Sends a newly recorded damage event together with the current aggregates.
 		void OnDamageRecorded(const Damage::DamageEvent& a_event);
 
@@ -84,14 +137,33 @@ namespace UI
 		/// leaves. The payload therefore carries the numbers of the slots
 		/// instead of the ids of the NPCs:
 		///   * the slots of the NPCs that left the screen;
-		///   * the slots of the NPCs that entered the screen, together with
-		///     their ids and their names;
 		///   * the slots of the NPCs that moved, together with their new
-		///     positions.
+		///     positions;
+		///   * the slots of the NPCs that entered the screen, together with
+		///     their ids and their names.
 		///
 		/// The positions are sent in pixels, so nothing is sent before the
 		/// view reported the size of its viewport.
-		void SendNpcSlots(const Npc::SlotDelta& a_delta);
+		///
+		/// The positions are the ones the markers will have when the game
+		/// frame they belong to is on the screen: the bridge knows how fast
+		/// the markers move, so it moves them forward by the length of the
+		/// frame that the view is behind.
+		///
+		/// The view does not have to calculate anything on its own: it only
+		/// writes the numbers it gets into the element of the slot.
+		///
+		/// @param a_delta the changes of the slots
+		/// @param a_time the moment the positions were measured, in
+		///               milliseconds since the epoch
+		/// @param a_frameInterval the length of a frame of the game, in
+		///                       milliseconds
+		/// @param a_leadFrames the number of frames that the camera of the
+		///                     measurement was already old
+		void SendNpcSlots(const Npc::SlotDelta& a_delta,
+						  std::int64_t a_time,
+						  int a_frameInterval,
+						  int a_leadFrames);
 
 		/// Forgets the NPCs of the view.
 		///
@@ -123,6 +195,33 @@ namespace UI
 		/// every NPC have to be sent again after the view announced itself.
 		void ResetNpcState();
 
+		/// Moves a marker forward to the place it will have when the frame it
+		/// belongs to is on the screen.
+		///
+		/// The view of PrismaUI is drawn in the frame after the one that was
+		/// measured and it is composited with the frame after that one, so
+		/// every marker is a whole frame behind its NPC. The movement of a
+		/// marker is a straight line: it is the movement of the camera on the
+		/// screen, and a camera that turns at a constant speed moves every
+		/// point of the screen at a constant speed too.
+		///
+		/// The prediction is repeated as long as the movement goes on. When
+		/// the camera slows down, the movement of the last two frames says so
+		/// and the prediction becomes smaller with it, so a camera that stops
+		/// does not make the markers run away.
+		///
+		/// @param a_state the state of the slot
+		/// @param a_measured the position that was just measured
+		/// @param a_time the moment the position was measured, in
+		///               milliseconds since the epoch
+		/// @param a_horizon the time that the marker has to be moved forward,
+		///                  in milliseconds
+		/// @return the position of the marker on the screen
+		[[nodiscard]] static Npc::ViewMarker Predict(const SlotState& a_state,
+													 const Npc::ViewMarker& a_measured,
+													 std::int64_t a_time,
+													 double a_horizon);
+
 		PRISMA_UI_API::IVPrismaUI1* _api = nullptr;
 
 		/// The view id is written on the game thread and read from the PrismaUI
@@ -142,14 +241,8 @@ namespace UI
 		/// PrismaUI thread never touch it at the same time.
 		std::mutex _npcMutex;
 
-		/// The positions of the slots that the view knows.
-		///
-		/// The positions are the plain CSS values of a marker, so a slot is
-		/// only sent again when it really moved.
-		std::array<Npc::ViewMarker, Npc::kMaxSlots> _slotValues{};
-
-		/// The slots whose positions the view knows.
-		std::bitset<Npc::kMaxSlots> _slotSent;
+		/// The state of the slots.
+		std::array<SlotState, Npc::kMaxSlots> _slots{};
 
 		/// The NPCs whose names the view knows.
 		///
@@ -182,5 +275,21 @@ namespace UI
 		/// screen of the game. The size is zero as long as the view did not
 		/// report it, and the positions cannot be sent before that.
 		Npc::Viewport _viewport;
+
+		/// The delay of the last frame of the markers, in milliseconds.
+		///
+		/// The view reports it, because only the view knows how long the
+		/// positions of a frame needed until they were on the screen. It is
+		/// written on the thread of the view and read on the game thread.
+		std::atomic<std::int64_t> _syncAge{ -1 };
+
+		/// The horizon of the last prediction, in milliseconds.
+		///
+		/// It is written on the game thread and read on the game thread, but
+		/// it is atomic, so the log can read it without a lock.
+		std::atomic<std::int64_t> _predictionHorizon{ 0 };
+
+		/// The number of frames that the last prediction compensated.
+		std::atomic<int> _predictionFrames{ 0 };
 	};
 }

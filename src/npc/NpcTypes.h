@@ -68,6 +68,75 @@ namespace Npc
 	/// are far away.
 	constexpr int kMinHeadRadius = 2;
 
+	/// The state of the camera that renders the world.
+	///
+	/// The state is a plain copy of the transform of the camera, so it can be
+	/// compared with the state of another moment of the frame. The overlay
+	/// uses it to find out when the engine moves the camera: the markers are
+	/// only as fresh as the camera they are projected with, so a camera that
+	/// is one frame old puts every marker one frame behind its NPC.
+	struct CameraState
+	{
+		/// The position of the camera in the world.
+		float position[3] = { 0.0f, 0.0f, 0.0f };
+
+		/// The rotation of the camera in the world.
+		float rotation[9] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+
+		/// True when the camera was found.
+		bool valid = false;
+
+		/// True when the camera is at the same place as another one.
+		///
+		/// The comparison is fuzzy: the engine writes the transform of the
+		/// camera in single precision, so the last bits of the numbers are
+		/// not stable. A camera that cannot be compared counts as the same
+		/// one, so a missing camera never looks like a camera that moved.
+		[[nodiscard]] bool Matches(const CameraState& a_other) const
+		{
+			if (!valid || !a_other.valid) {
+				return true;
+			}
+
+			for (std::size_t i = 0; i < 3; ++i) {
+				if (std::abs(position[i] - a_other.position[i]) > 0.01f) {
+					return false;
+				}
+			}
+
+			for (std::size_t i = 0; i < 9; ++i) {
+				if (std::abs(rotation[i] - a_other.rotation[i]) > 0.0001f) {
+					return false;
+				}
+			}
+
+			return true;
+		}
+	};
+
+	/// Rounds a value to a tenth of a pixel.
+	///
+	/// The offsets of a marker are sent with a tenth of a pixel, so the view
+	/// can tell how fast a marker moves and put it where it will be when it
+	/// is drawn.
+	[[nodiscard]] inline float RoundToTenth(float a_value)
+	{
+		return std::round(a_value * 10.0f) / 10.0f;
+	}
+
+	/// Rounds a value to a hundredth.
+	[[nodiscard]] inline float RoundToHundredth(float a_value)
+	{
+		return std::round(a_value * 100.0f) / 100.0f;
+	}
+
+	/// Reads the state of the camera that renders the world.
+	///
+	/// The state is a copy of the transform of the camera, so it stays the
+	/// same even when the camera moves on. The overlay compares the states
+	/// of the frames to find out when the engine moves the camera.
+	[[nodiscard]] CameraState CaptureCameraState();
+
 	/// The size of the font of the number in the stylesheet, in pixels.
 	///
 	/// The number is scaled up from that size. The value is a constant of the
@@ -87,13 +156,18 @@ namespace Npc
 	/// The values are the plain CSS values of the number: the two offsets in
 	/// pixels and the scale of the font. The view uses them as they are, it
 	/// does not compute anything on its own.
+	///
+	/// The offsets are rounded to a tenth of a pixel: a marker that moves
+	/// fast has to be placed between two pixels, otherwise the view cannot
+	/// tell how fast it moves and cannot put it where it will be when it is
+	/// drawn.
 	struct ViewMarker
 	{
 		/// The horizontal offset of the number, in pixels.
-		int x = 0;
+		float x = 0.0f;
 
 		/// The vertical offset of the number, in pixels.
-		int y = 0;
+		float y = 0.0f;
 
 		/// The scale of the font of the number.
 		float scale = 1.0f;
@@ -130,9 +204,9 @@ namespace Npc
 		}
 
 		return {
-			static_cast<int>(std::lround(a_marker.x * a_viewport.width)),
-			static_cast<int>(std::lround((1.0f - a_marker.y) * a_viewport.height)) - headRadius,
-			static_cast<float>(size) / static_cast<float>(kBaseFontSize),
+			RoundToTenth(a_marker.x * a_viewport.width),
+			RoundToTenth((1.0f - a_marker.y) * a_viewport.height) - static_cast<float>(headRadius),
+			RoundToHundredth(static_cast<float>(size) / static_cast<float>(kBaseFontSize)),
 		};
 	}
 }

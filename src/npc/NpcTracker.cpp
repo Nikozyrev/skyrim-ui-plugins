@@ -403,6 +403,31 @@ namespace Npc
 		return true;
 	}
 
+	CameraState CaptureCameraState()
+	{
+		CameraState state;
+
+		auto* camera = ResolveCamera();
+
+		if (!camera) {
+			return state;
+		}
+
+		const auto& world = camera->world;
+
+		state.position[0] = world.translate.x;
+		state.position[1] = world.translate.y;
+		state.position[2] = world.translate.z;
+
+		for (std::size_t i = 0; i < 9; ++i) {
+			state.rotation[i] = world.rotate.entry[i / 3][i % 3];
+		}
+
+		state.valid = true;
+
+		return state;
+	}
+
 	Tracker& Tracker::Get()
 	{
 		static Tracker singleton;
@@ -489,29 +514,36 @@ namespace Npc
 								continue;
 							}
 
-							if (!HasClearLineOfSight(a_actor)) {
-								continue;
-							}
-
 							Marker marker;
 
 							// The height of the actor is measured once and then kept, so the
 							// point of the marker does not follow the animations of the NPC.
 							const float height = ResolveHeight(a_actor, a_actor->GetFormID());
 
-							if (BuildMarker(a_actor, camera, height, marker)) {
-								// The name is read from the engine only when the NPC is
-								// seen for the first time.
-								marker.name = ResolveName(a_actor, marker.id);
-
-								// The health of the NPC travels with its marker, so the
-								// bar above its head is always up to date.
-								marker.health = HealthTracker::Get().Sync(a_actor);
-
-								visible.insert(marker.id);
-
-								_markers.push_back(std::move(marker));
+							// The point of the marker is built before the line of sight is
+							// checked: the projection is cheap and it throws the NPCs that
+							// are not on the screen away, while the line of sight is a ray
+							// in the physics of the world. So the ray is only cast for the
+							// NPCs that are really on the screen.
+							if (!BuildMarker(a_actor, camera, height, marker)) {
+								continue;
 							}
+
+							if (!HasClearLineOfSight(a_actor)) {
+								continue;
+							}
+
+							// The name is read from the engine only when the NPC is
+							// seen for the first time.
+							marker.name = ResolveName(a_actor, marker.id);
+
+							// The health of the NPC travels with its marker, so the
+							// bar above its head is always up to date.
+							marker.health = HealthTracker::Get().Sync(a_actor);
+
+							visible.insert(marker.id);
+
+							_markers.push_back(std::move(marker));
 						}
 						catch (const std::exception& a_error) {
 							logger::error("NPC tracker: failed to read an actor: {}", a_error.what());

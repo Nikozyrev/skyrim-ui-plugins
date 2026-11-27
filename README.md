@@ -169,8 +169,9 @@ so the view only copies these values into the stylesheet and does not compute
 anything on its own.
 
 `Npc::Overlay` drives the tracker from a hook of the frame update of the game and
-refreshes the markers at most every 16 ms, so at most 60 times per second. The
-overlay stays idle until the view is up.
+refreshes the markers in every frame of the game, so at most 60 times per second
+at 60 FPS and as often as the game draws at a higher rate. The overlay stays
+idle until the view is up.
 
 The hook replaces one call of the game with a call of the plugin. The plugin calls
 the original function with the arguments of the call and gives its result back, so
@@ -178,6 +179,11 @@ the game does not notice anything. The four argument registers and the result ar
 forwarded, because the engine rebuilds the code between the versions and the
 signature of the called function is not the same everywhere: an earlier version of
 the hook dropped the first argument and the game crashed right after the call.
+
+The plugin calls the original function first and measures the markers afterwards:
+the camera of the world is only as fresh as the moment it is read, so a marker
+that is projected with a camera of the last frame is one frame behind its NPC -
+and that gap grows with the speed of the camera.
 
 The place of the call is picked by the version of the game, because the engine
 moves its code around and the offset of the call inside the function is not stable.
@@ -194,8 +200,72 @@ The view reports the size of its viewport to the plugin (`onViewportUpdate`),
 because the positions are sent in pixels and the window of the overlay is not
 the screen of the game. The plugin needs that size before it can send the
 first frame, so nothing is sent before the view reported it. A movement that
-is smaller than a pixel does not change the value at all, so it does not even
-show up in a frame.
+is smaller than a tenth of a pixel does not change the value at all, so it does
+not even show up in a frame.
+
+### Frame synchronization
+
+The overlay is drawn by a browser that runs on a thread of its own, so the
+positions of the markers always reach the screen a little later than the frame
+of the game they belong to. The delay is small, but it is a delay of the whole
+picture: while the camera turns, every NPC moves over the screen, so a delay
+of a single frame puts every marker a whole frame behind its NPC.
+
+Three things keep the overlay on the NPC:
+
+1. **The frame is measured with the camera of the frame that is drawn.** The
+   plugin reads the camera right after the game updated the frame. The engine
+   moves the camera either inside that update or after it, and the plugin
+   notices which one it is: it reads the camera before and after the call and
+   compares the states of the frames. When the camera turns out to be one
+   frame old, one more frame is compensated, so the positions that go out are
+   older than they look.
+
+2. **The frame goes out first.** The positions of the markers are the payload
+   that has to be on the screen as soon as possible, so they are sent before
+   the names, the health and the slots that left the screen. The frame is
+   small - a dozen bytes per marker - and it is the only thing that is sent in
+   every frame.
+
+3. **The plugin puts every marker where it will be when the game frame it
+   belongs to is on the screen.** The page of PrismaUI is drawn in the frame
+   after the one that was measured, and it is composited with the frame after
+   that one, so a marker is a whole frame of the game behind its NPC. The
+   plugin knows the length of a frame and how fast a marker moves, so it moves
+   the marker forward by a whole frame. A camera that turns at a constant
+   speed moves every point of the screen at a constant speed too, so the
+   movement of a marker is a straight line and the compensation is exact
+   while the camera turns.
+
+   The whole calculation happens in the plugin: the view only writes the
+   numbers it gets into the element of the slot. The speed of a marker is
+   measured on every frame of the game, not only on the frames that are sent,
+   so a marker that stops is noticed right away.
+
+The prediction is the part that can be tuned: `kPredictionGain` in
+`src/ui/PrismaBridge.cpp` is the share of the movement that is repeated. A
+value of `0` turns the prediction off, a value of `1` repeats the whole
+movement. The prediction also stops when the movement of a marker slows down,
+so a camera that stops does not make the markers run away. The horizon of the
+prediction is a whole number of frames of the game and never longer than
+`kMaxPredictionMs`.
+
+The state of the frame is written to the log of the plugin every 120 frames,
+so the delay of the whole path, the price of the overlay and the horizon of
+the prediction are visible:
+
+```
+NPC overlay: the positions of the last frame were 21 ms old, the game draws every 58 ms, the game updates the frame in 57 ms, the overlay takes 4 ms, the prediction looks 58 ms ahead (1 frame).
+```
+
+The view reports the delay, so the log holds the delay that the measurement of
+the plugin needed until the page was painted. The update of the frame is the
+time of the game itself, the overlay is the time that the overlay costs: the
+collection of the NPCs, the projection of the markers and the push of the
+positions. The horizon is the time that the markers were moved forward, in
+whole frames of the game. When the camera of the frame turns out to be one
+frame old, the line says so.
+
 
 ### Damage above the NPCs
 
@@ -312,16 +382,25 @@ many elements it has to draw.
 A frame carries the numbers above the NPCs:
 
 ```
-3:1042,215,1.18;7:987,230,1.00
+T:1753600000123;3:1042.5,215.4,1.18;7:987.0,230.9,1.00
 ```
 
 Every tuple is `slot:x,y,scale`, separated by semicolons. The slot is the
 number of the slot of the overlay, the numbers are the plain CSS values of the
-number: the horizontal offset, the vertical offset in whole pixels and the
-scale of the font. The scale is written with two decimals, because it is a
-whole font size divided by the base size of the stylesheet. Only the slots
-that really moved are part of a frame, so a frame is empty - and not sent at
-all - while nothing moves.
+number: the horizontal offset, the vertical offset and the scale of the font.
+The offsets are written with a tenth of a pixel, so the plugin can tell how
+fast a marker moves. The scale is written with two decimals, because it is a
+whole font size divided by the base size of the stylesheet. Only the slots that
+really moved are part of a frame, so a frame is empty - and not sent at all -
+while nothing moves.
+
+The frame starts with the time of the frame: `T:<milliseconds>`, the moment the
+plugin measured the positions. The time is the clock of the system, so the view
+compares it with its own clock and knows how old the positions are. The
+positions themselves are already the future ones - the plugin moved every
+marker forward by the length of the frame the view is behind - so the view only
+writes them into the element of the slot. See
+[Frame synchronization](#frame-synchronization).
 
 The view registers `window.onViewReady` as well and calls it once its own
 handler is installed. The plugin answers with a snapshot, which closes the race
